@@ -1,0 +1,18 @@
+# === Ignore everything by default ===
+*
+
+# === But keep these ===
+!.gitignore
+!Thesis copy 2/
+!Thesis copy 2/**
+
+# === Ignore large data/model files ===
+*.npy
+*.pth
+*.mat
+*.zip
+*.csv
+*.h5
+Data/
+jordan_venv/
+.history/
