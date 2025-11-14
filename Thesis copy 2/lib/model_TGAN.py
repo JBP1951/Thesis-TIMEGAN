@@ -58,13 +58,15 @@ class Encoder(nn.Module):
     def __init__(self, opt):
         super(Encoder, self).__init__()
         self.rnn = nn.GRU(input_size=opt.z_dim, hidden_size=opt.hidden_dim, num_layers=opt.num_layer)
+        self.ln = nn.LayerNorm(opt.hidden_dim)   # NEW
         self.fc = nn.Linear(opt.hidden_dim, opt.hidden_dim)
         self.sigmoid = nn.Sigmoid()
         self.apply(_weights_init)
 
     def forward(self, x, sigmoid=True):
-        e_outputs, _ = self.rnn(x)
-        H = self.fc(e_outputs)
+        e_outputs, _ = self.rnn(x)        # GRU output
+        e_outputs = self.ln(e_outputs)    # NEW
+        H = self.fc(e_outputs)            # project
         if sigmoid:
             H = self.sigmoid(H)
         return H
@@ -83,12 +85,14 @@ class Recovery(nn.Module):
         super(Recovery, self).__init__()
         # corregido: mantener hidden_dim en RNN
         self.rnn = nn.GRU(input_size=opt.hidden_dim, hidden_size=opt.hidden_dim, num_layers=opt.num_layer)
+        self.ln = nn.LayerNorm(opt.hidden_dim)     # NEW
         self.fc = nn.Linear(opt.hidden_dim, opt.z_dim)
         self.sigmoid = nn.Sigmoid()
         self.apply(_weights_init)
 
     def forward(self, h, sigmoid=True):
         r_outputs, _ = self.rnn(h)
+        r_outputs = self.ln(r_outputs)             # NEW
         X_tilde = self.fc(r_outputs)
         if sigmoid:
             X_tilde = self.sigmoid(X_tilde)
@@ -107,12 +111,14 @@ class Generator(nn.Module):
     def __init__(self, opt):
         super(Generator, self).__init__()
         self.rnn = nn.GRU(input_size=opt.z_dim, hidden_size=opt.hidden_dim, num_layers=opt.num_layer)
+        self.ln = nn.LayerNorm(opt.hidden_dim)     # NEW
         self.fc = nn.Linear(opt.hidden_dim, opt.hidden_dim)
         self.sigmoid = nn.Sigmoid()
         self.apply(_weights_init)
 
     def forward(self, z, sigmoid=True):
         g_outputs, _ = self.rnn(z)
+        g_outputs = self.ln(g_outputs)             # NEW
         E = self.fc(g_outputs)
         if sigmoid:
             E = self.sigmoid(E)
@@ -131,12 +137,14 @@ class Supervisor(nn.Module):
     def __init__(self, opt):
         super(Supervisor, self).__init__()
         self.rnn = nn.GRU(input_size=opt.hidden_dim, hidden_size=opt.hidden_dim, num_layers=opt.num_layer)
+        self.ln = nn.LayerNorm(opt.hidden_dim)     # NEW
         self.fc = nn.Linear(opt.hidden_dim, opt.hidden_dim)
         self.sigmoid = nn.Sigmoid()
         self.apply(_weights_init)
 
     def forward(self, h, sigmoid=True):
         s_outputs, _ = self.rnn(h)
+        s_outputs = self.ln(s_outputs)             # NEW
         S = self.fc(s_outputs)
         if sigmoid:
             S = self.sigmoid(S)
@@ -148,22 +156,38 @@ class Supervisor(nn.Module):
 # -------------------------------
 class Discriminator(nn.Module):
     """
-    Discriminator: distinguish real vs synthetic sequences
+    Critic for WGAN-GP:
     Input:  H (seq_len, batch, hidden_dim)
-    Output: Y_hat (seq_len, batch, 1) - probability
+    Output: critic score (seq_len, batch, 1)  -- NO sigmoid
     """
     def __init__(self, opt):
         super(Discriminator, self).__init__()
-        self.rnn = nn.GRU(input_size=opt.hidden_dim, hidden_size=opt.hidden_dim, num_layers=opt.num_layer)
 
-        # update this part of the code, now we use spectral normalziation SOLO en la proyección final
-        self.fc = spectral_norm(nn.Linear(opt.hidden_dim, 1))
+        # GRU encoder for temporal structure
+        self.rnn = nn.GRU(
+            input_size=opt.hidden_dim,
+            hidden_size=opt.hidden_dim,
+            num_layers=opt.num_layer
+        )
+
+        # NEW: LayerNorm after the GRU (recommended in the paper)
+        self.ln = nn.LayerNorm(opt.hidden_dim)
+
+        # IMPORTANT: for WGAN-GP we must REMOVE spectral norm and sigmoid.
+        self.fc = nn.Linear(opt.hidden_dim, 1)
+
         self.apply(_weights_init)
 
     def forward(self, h, sigmoid: bool = False):
-        d_outputs, _ = self.rnn(h)
-        logits = self.fc(d_outputs)  # <- logits crudos
-        # (dejamos el parámetro `sigmoid` para compatibilidad pero NO se usa)
+        """
+        h: [seq_len, batch, hidden_dim]
+        """
+        d_outputs, _ = self.rnn(h)           # temporal features
+        d_outputs = self.ln(d_outputs)       # layer normalization (NEW)
+
+        logits = self.fc(d_outputs)          # raw critic score
+
+        # sigmoid is ignored because WGAN uses raw scores
         return logits
         
     ''' self.fc = nn.Linear(opt.hidden_dim, 1)  # <- corregido para probabilidad

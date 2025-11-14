@@ -35,6 +35,14 @@ class Options():
             type=str,
             help='Type of dataset to use: sine (synthetic) or my_signals (real signals)'
         )
+
+        self.parser.add_argument('--gp_lambda', 
+            type=float, default=10.0, help='Gradient penalty weight')
+
+        self.parser.add_argument('--n_critic', type=int, default=5,
+                         help='Number of critic iterations per generator iteration (WGAN-GP)')
+
+
         self.parser.add_argument(
             '--seq_len',
             default=256,

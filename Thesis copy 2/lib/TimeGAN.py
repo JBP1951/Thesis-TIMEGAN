@@ -162,13 +162,27 @@ class BaseModel():
       self.train_one_iter_s()
       print('Supervisor training step: {}/{}'.format(it, self.opt.iteration))
 
+    # we modify this beucase WGAN  need to train 
     for it in range(self.opt.iteration):
+
+      # 1) Train critic (discriminator) n_critic times
+      for _ in range(self.opt.n_critic):
+          self.train_one_iter_d()
+
+      # 2) Train generator + supervisor once
+      self.train_one_iter_g()
+
+      print(f'WGAN adversarial step: {it}/{self.opt.iteration}')
+
+
+
+    '''for it in range(self.opt.iteration):
       for kk in range(2):
         self.train_one_iter_g()
         self.train_one_iter_er_()
       self.train_one_iter_d()
       print('Adversarial training step: {}/{}'.format(it, self.opt.iteration))
-
+    '''
     self.save_weights(self.opt.iteration)
     self.generated_data = self.generation(self.opt.batch_size)
     print('Finish Synthetic Data Generation')
@@ -362,6 +376,34 @@ class TimeGAN(BaseModel):
       self.err_s.backward(retain_graph=True)
       print("Loss S: ", self.err_s)
 
+    # GRADIENT PENALTY NEW
+    def gradient_penalty(self, real, fake):
+    #""" Compute gradient penalty for WGAN-GP in latent space H """
+      alpha = torch.rand(real.size(0), 1, 1).to(self.device)
+      alpha = alpha.expand_as(real)
+
+      interpolates = alpha * real + ((1 - alpha) * fake)
+      interpolates.requires_grad_(True)
+
+      d_interpolates = self.netd(interpolates)
+
+      gradients = torch.autograd.grad(
+          outputs=d_interpolates,
+          inputs=interpolates,
+          grad_outputs=torch.ones_like(d_interpolates),
+          create_graph=True,
+          retain_graph=True,
+          only_inputs=True
+      )[0]
+
+      gradients = gradients.reshape(real.size(0), -1)
+      gradient_norm = gradients.norm(2, dim=1)
+
+      gp = ((gradient_norm - 1) ** 2).mean()
+      return gp
+
+
+
     def backward_d(self):
       #here we reeplace entirly the funciton
       """
@@ -374,14 +416,19 @@ class TimeGAN(BaseModel):
       - Y_fake = D(H_hat)           (features generadas por G->S)
       - Y_fake_e = D(E_hat)         (features generadas solo por G)
     """
-      # logits (seq_len, batch, 1) -> promediamos sobre todas las dimensiones
-      loss_real = torch.relu(1.0 - self.Y_real).mean()
-      loss_fake = torch.relu(1.0 + self.Y_fake).mean()
-      loss_fake_e = torch.relu(1.0 + self.Y_fake_e).mean()
+   
+      # WGAN critic loss
+      loss_real = -self.Y_real.mean()
+      loss_fake = self.Y_fake.mean()
+      loss_fake_e = self.Y_fake_e.mean()
 
-      self.err_d = loss_real + loss_fake + self.opt.w_gamma * loss_fake_e
+      # Gradient Penalty in latent space H_hat
+      gp = self.gradient_penalty(self.H.detach(), self.H_hat.detach())
+
+      self.err_d = loss_real + loss_fake + self.opt.w_gamma * loss_fake_e + self.opt.gp_lambda * gp
 
       self.err_d.backward(retain_graph=True)
+
 
 
       '''
