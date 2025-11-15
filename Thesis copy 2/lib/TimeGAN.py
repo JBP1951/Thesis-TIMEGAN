@@ -128,6 +128,7 @@ class BaseModel():
     self.X = torch.tensor(self.X0, dtype=torch.float32).to(self.device)
 
     self.optimize_params_er_()
+    
 
 
   def train_one_iter_s(self):
@@ -135,7 +136,9 @@ class BaseModel():
     self.nets.train()
     self.X0, self.T = batch_generator(self.ori_data, self.ori_time, self.opt.batch_size)
     self.X = torch.tensor(self.X0, dtype=torch.float32).to(self.device)
-    self.optimize_params_s()
+    s_loss = self.optimize_params_s()
+    return s_loss
+
 
 
   def train_one_iter_g(self):
@@ -145,7 +148,8 @@ class BaseModel():
     self.X = torch.tensor(self.X0, dtype=torch.float32).to(self.device)
     self.Z = random_generator(self.opt.batch_size, self.opt.z_dim, self.T, self.max_seq_len)
     self.Z = np.asarray(self.Z)  # make sure numpy array
-    self.optimize_params_g()
+    g_loss  = self.optimize_params_g()
+    return g_loss
 
 
   def train_one_iter_d(self):
@@ -155,43 +159,48 @@ class BaseModel():
     self.X = torch.tensor(self.X0, dtype=torch.float32).to(self.device)
     self.Z = random_generator(self.opt.batch_size, self.opt.z_dim, self.T, self.max_seq_len)
     self.Z = np.asarray(self.Z)
-    self.optimize_params_d()
+    d_loss  = self.optimize_params_d()
+    return d_loss
+
 
 
   def train(self):
-    """High-level training loop (same flow as original)"""
+   
+    print("=== PRETRAINING: Embedding + Recovery ===")
     for it in range(self.opt.iteration):
-      self.train_one_iter_er()
-      print('Encoder training step: {}/{}'.format(it, self.opt.iteration))
+        er_loss = self.train_one_iter_er()
 
+        if it % self.opt.print_freq == 0:
+            print(f"[ER] Iter {it}/{self.opt.iteration} | ER Loss = {er_loss:.6f}")
+
+    print("=== PRETRAINING: Supervisor ===")
     for it in range(self.opt.iteration):
-      self.train_one_iter_s()
-      print('Supervisor training step: {}/{}'.format(it, self.opt.iteration))
+        s_loss = self.train_one_iter_s()
 
-    # we modify this beucase WGAN  need to train 
+        if it % self.opt.print_freq == 0:
+            print(f"[S] Iter {it}/{self.opt.iteration} | Supervisor Loss = {s_loss:.6f}")
+
+    print("=== ADVERSARIAL TRAINING (WGAN-GP) ===")
     for it in range(self.opt.iteration):
 
-      # 1) Train critic (discriminator) n_critic times
-      for _ in range(self.opt.n_critic):
-          self.train_one_iter_d()
+        # ---- Train Critic (D) ----
+        for _ in range(self.opt.n_critic):
+            d_loss = self.train_one_iter_d()
 
-      # 2) Train generator + supervisor once
-      self.train_one_iter_g()
+        # ---- Train Generator ----
+        g_loss = self.train_one_iter_g()
 
-      print(f'WGAN adversarial step: {it}/{self.opt.iteration}')
+        if it % self.opt.print_freq == 0:
+            print("----------------------------------------------")
+            print(f"[WGAN] Iter {it}/{self.opt.iteration}")
+            print(f"  D Loss = {d_loss:.6f}")
+            print(f"  G Loss = {g_loss:.6f}")
+            print("----------------------------------------------")
 
-
-
-    '''for it in range(self.opt.iteration):
-      for kk in range(2):
-        self.train_one_iter_g()
-        self.train_one_iter_er_()
-      self.train_one_iter_d()
-      print('Adversarial training step: {}/{}'.format(it, self.opt.iteration))
-    '''
     self.save_weights(self.opt.iteration)
     self.generated_data = self.generation(self.opt.batch_size)
-    print('Finish Synthetic Data Generation')
+    print("Finish Synthetic Data Generation")
+
 
 
   def generation(self, num_samples, mean=0.0, std=1.0):
@@ -282,11 +291,11 @@ class TimeGAN(BaseModel):
         lr = getattr(self.opt, "lr", 0.001)
         beta1 = getattr(self.opt, "beta1", 0.9)
 
-        self.optimizer_e = optim.Adam(self.nete.parameters(), lr=lr, betas=(beta1, 0.999))
-        self.optimizer_r = optim.Adam(self.netr.parameters(), lr=lr, betas=(beta1, 0.999))
-        self.optimizer_g = optim.Adam(self.netg.parameters(), lr=lr, betas=(beta1, 0.999))
-        self.optimizer_d = optim.Adam(self.netd.parameters(), lr=lr, betas=(beta1, 0.999))
-        self.optimizer_s = optim.Adam(self.nets.parameters(), lr=lr, betas=(beta1, 0.999))
+        self.optimizer_e = optim.Adam(self.nete.parameters(), lr=lr, betas=(beta1, 0.9))
+        self.optimizer_r = optim.Adam(self.netr.parameters(), lr=lr, betas=(beta1, 0.9))
+        self.optimizer_g = optim.Adam(self.netg.parameters(), lr=lr, betas=(beta1, 0.9))
+        self.optimizer_d = optim.Adam(self.netd.parameters(), lr=lr, betas=(beta1, 0.9))
+        self.optimizer_s = optim.Adam(self.nets.parameters(), lr=lr, betas=(beta1, 0.9))
 
 
     # -----------------------
@@ -496,6 +505,7 @@ class TimeGAN(BaseModel):
       self.optimizer_s.zero_grad()
       self.backward_s()
       self.optimizer_s.step()
+      return float(self.err_s.item())   # devolvemos el valor numérico
 
     def optimize_params_g(self):
       self.forward_e()
@@ -509,6 +519,7 @@ class TimeGAN(BaseModel):
       self.backward_g()
       self.optimizer_g.step()
       self.optimizer_s.step()
+      return float(self.err_g.item())    #  devolvemos G-loss
 
     def optimize_params_d(self):
       self.forward_e()
@@ -519,3 +530,4 @@ class TimeGAN(BaseModel):
       self.optimizer_d.zero_grad()
       self.backward_d()
       self.optimizer_d.step()
+      return float(self.err_d.item())
