@@ -142,7 +142,8 @@ class Options():
 
     def parse(self):
         """Parse arguments (unchanged from original)"""
-        self.opt = self.parser.parse_args()
+        self.opt, _ = self.parser.parse_known_args()
+
         self.opt.isTrain = self.isTrain
 
         str_ids = self.opt.gpu_ids.split(',')

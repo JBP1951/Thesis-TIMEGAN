@@ -35,8 +35,12 @@ class BaseModel():
     # Initialize variables
     self.opt = opt
 
-    # Normalize original data (expects ori_data as list/array of sequences)
-    self.ori_data, self.min_val, self.max_val = NormMinMax(ori_data)
+    # Tus datos YA vienen normalizados desde data_preprocess.py
+# No volvemos a normalizar aquí (evita MemoryError y doble escalado)
+    self.ori_data = ori_data
+    self.min_val = None
+    self.max_val = None
+
 
     #THIS LINE WAS ADDED
             # ✅ Automatically adapt latent and input dimensions to data
@@ -49,7 +53,9 @@ class BaseModel():
     self.ori_time, self.max_seq_len = extract_time(self.ori_data)
 
     # Data count (assumes ori_data convertible to numpy array of shape [N, seq_len, feat])
-    self.data_num, _, _ = np.asarray(ori_data).shape
+    # ori_data es una lista de secuencias [seq_len, dim]
+    self.data_num = len(self.ori_data)
+
 
     # Train/test directories for checkpoints/logs
     self.trn_dir = os.path.join(self.opt.outf, self.opt.name, 'train')
@@ -188,36 +194,41 @@ class BaseModel():
     print('Finish Synthetic Data Generation')
 
 
-  def generation(self, num_samples, mean = 0.0, std = 1.0):
-    """Generate synthetic sequences (num_samples) and renormalize to original scale"""
+  def generation(self, num_samples, mean=0.0, std=1.0):
+    """
+    Generate synthetic sequences for fixed-length windows.
+    Assumes ALL sequences have the same length = self.max_seq_len.
+    """
+
     if num_samples == 0:
-      return None
+        return None
 
-    # get a mini-batch (to obtain T info)
-    self.X0, self.T = batch_generator(self.ori_data, self.ori_time, self.opt.batch_size)
+    # 1️⃣ Longitud fija para todas las secuencias
+    T_mb = [self.max_seq_len] * num_samples
 
-    # create random noise for generation
-    self.Z = random_generator(num_samples, self.opt.z_dim, self.T, self.max_seq_len, mean, std)
-    self.Z = torch.tensor(self.Z, dtype=torch.float32).to(self.device)
+    # 2️⃣ Generar ruido Z
+    Z = random_generator(
+        num_samples,
+        self.opt.z_dim,
+        T_mb,
+        self.max_seq_len,
+        mean,
+        std
+    )
+    Z = torch.tensor(Z, dtype=torch.float32).to(self.device)
 
-    # forward pass through generator + supervisor + recovery
-    self.E_hat = self.netg(self.Z)       # [num_samples, seq_len, hidden_dim] or (seq_len, batch, hidden)
-    self.H_hat = self.nets(self.E_hat)
-    
-    generated_data_curr = self.netr(self.H_hat).cpu().detach().numpy()  # shape: [num_samples, seq_len, z_dim]
+    # 3️⃣ Forward: Generator → Supervisor → Recovery
+    E_hat = self.netg(Z)
+    H_hat = self.nets(E_hat)
+    X_hat = self.netr(H_hat).cpu().detach().numpy()  # [num_samples, seq_len, features]
 
-    # slice each sample to its original length and collect
-    generated_data = []
-    for i in range(num_samples):
-      temp = generated_data_curr[i, :self.ori_time[i], :]
-      generated_data.append(temp)
-
-    # Renormalization: apply per-feature min/max to each sequence
-    # min_val and max_val are arrays (features,)
-    # ensure broadcasting works: (seq_len, features) * (features,) -> (seq_len, features)
-    generated_data = [ (seq * self.max_val) + self.min_val for seq in generated_data ]
+    # 4️⃣ NO RENORMALIZAR AQUÍ
+    # Los datos permanecen en escala [0,1].
+    generated_data = [X_hat[i] for i in range(num_samples)]
 
     return generated_data
+
+
 
 
 
@@ -378,16 +389,22 @@ class TimeGAN(BaseModel):
 
     # GRADIENT PENALTY NEW
     def gradient_penalty(self, real, fake):
-    #""" Compute gradient penalty for WGAN-GP in latent space H """
-      alpha = torch.rand(real.size(0), 1, 1).to(self.device)
-      alpha = alpha.expand_as(real)
+      """Gradient Penalty adaptado para TimeGAN. real, fake: [seq_len, batch, hidden_dim]"""
+      seq_len, batch_size, hidden_dim = real.size()
 
-      interpolates = alpha * real + ((1 - alpha) * fake)
+      # alpha por BATCH (NO por tiempo)
+      alpha = torch.rand(1, batch_size, 1).to(self.device)
+      alpha = alpha.expand(seq_len, batch_size, hidden_dim)
+
+      # interpolación entre real y fake
+      interpolates = alpha * real + (1 - alpha) * fake
       interpolates.requires_grad_(True)
 
+      # pasar por el critic
       d_interpolates = self.netd(interpolates)
 
-      gradients = torch.autograd.grad(
+      # calcular gradiente dD/d(interpolates)
+      grad = torch.autograd.grad(
           outputs=d_interpolates,
           inputs=interpolates,
           grad_outputs=torch.ones_like(d_interpolates),
@@ -396,11 +413,14 @@ class TimeGAN(BaseModel):
           only_inputs=True
       )[0]
 
-      gradients = gradients.reshape(real.size(0), -1)
-      gradient_norm = gradients.norm(2, dim=1)
+      # grad: [seq_len, batch, hidden_dim]
+      # norma L2 por feature y promedio temporal
+      grad_norm = grad.reshape(seq_len, batch_size, -1).norm(2, dim=2)  # [seq_len, batch]
+      grad_norm = grad_norm.mean(dim=0)  # promedio sobre seq_len → [batch]
 
-      gp = ((gradient_norm - 1) ** 2).mean()
+      gp = ((grad_norm - 1) ** 2).mean()
       return gp
+
 
 
 

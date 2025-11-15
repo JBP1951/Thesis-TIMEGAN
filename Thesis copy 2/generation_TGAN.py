@@ -1,37 +1,27 @@
 """
 generation_TGAN.py
-Safe mini-batch synthetic data generation for TimeGAN.
-Allows large datasets to be processed without memory or index errors.
+Safe mini-batch synthetic data generation for TimeGAN (fixed-length version).
 """
 
-def safe_generation(model, num_samples, batch_size, verbose=True):
+def safe_generation(model, num_samples, batch_size=64, verbose=True):
     """
-    Generate synthetic data safely using mini-batches.
-
-    Args:
-        model: trained TimeGAN model
-        num_samples: total number of sequences to generate
-        batch_size: number of samples to generate per batch (default=64)
-        verbose: print progress info (default=True)
-
-    Returns:
-        List of all generated synthetic sequences
+    Generate synthetic sequences safely using mini-batches.
+    Works with fixed-length TimeGAN (Dario Version).
     """
+
     generated_all = []
     n_batches = (num_samples + batch_size - 1) // batch_size
 
     if verbose:
-        print(f"🧩 Generating {num_samples} samples in {n_batches} mini-batches of {batch_size}...")
+        print(f"🧩 Generating {num_samples} samples in {n_batches} batches of {batch_size}...")
 
     for b in range(n_batches):
-        start = b * batch_size
-        end = min((b + 1) * batch_size, num_samples)
-        current_n = end - start
+        current_n = min(batch_size, num_samples - b * batch_size)
 
-        # use real sequence lengths for this block
-        model.T = model.ori_time[start:end]
+        # FIXED-LENGTH GENERATION  ← ESTE ES EL CAMBIO CLAVE
+        model.T = [model.opt.seq_len] * current_n  
 
-        # generate one mini-batch
+        # Generate synthetic mini-batch
         gen_batch = model.generation(num_samples=current_n)
         generated_all.extend(gen_batch)
 

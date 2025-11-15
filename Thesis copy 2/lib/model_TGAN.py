@@ -84,7 +84,7 @@ class Recovery(nn.Module):
     def __init__(self, opt):
         super(Recovery, self).__init__()
         # corregido: mantener hidden_dim en RNN
-        self.rnn = nn.GRU(input_size=opt.hidden_dim, hidden_size=opt.hidden_dim, num_layers=opt.num_layer)
+        self.rnn = nn.GRU(input_size=opt.hidden_dim, hidden_size=opt.hidden_dim, num_layers=opt.num_layer,batch_first=True)
         self.ln = nn.LayerNorm(opt.hidden_dim)     # NEW
         self.fc = nn.Linear(opt.hidden_dim, opt.z_dim)
         self.sigmoid = nn.Sigmoid()
@@ -182,7 +182,9 @@ class Discriminator(nn.Module):
         """
         h: [seq_len, batch, hidden_dim]
         """
-        d_outputs, _ = self.rnn(h)           # temporal features
+        with torch.backends.cudnn.flags(enabled=False):
+            d_outputs, _ = self.rnn(h)
+       
         d_outputs = self.ln(d_outputs)       # layer normalization (NEW)
 
         logits = self.fc(d_outputs)          # raw critic score
