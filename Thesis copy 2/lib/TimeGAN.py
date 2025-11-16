@@ -291,11 +291,28 @@ class TimeGAN(BaseModel):
         lr = getattr(self.opt, "lr", 0.001)
         beta1 = getattr(self.opt, "beta1", 0.9)
 
-        self.optimizer_e = optim.Adam(self.nete.parameters(), lr=lr, betas=(beta1, 0.9))
-        self.optimizer_r = optim.Adam(self.netr.parameters(), lr=lr, betas=(beta1, 0.9))
-        self.optimizer_g = optim.Adam(self.netg.parameters(), lr=lr, betas=(beta1, 0.9))
-        self.optimizer_d = optim.Adam(self.netd.parameters(), lr=lr, betas=(beta1, 0.9))
-        self.optimizer_s = optim.Adam(self.nets.parameters(), lr=lr, betas=(beta1, 0.9))
+                # Encoder + Recovery optimizers
+        self.optimizer_e = optim.Adam(self.nete.parameters(),
+                                      lr=getattr(self.opt, "lr_e", lr),
+                                      betas=(beta1, 0.9))
+        self.optimizer_r = optim.Adam(self.netr.parameters(),
+                                      lr=getattr(self.opt, "lr_r", lr),
+                                      betas=(beta1, 0.9))
+
+        # Supervisor optimizer
+        self.optimizer_s = optim.Adam(self.nets.parameters(),
+                                      lr=getattr(self.opt, "lr_s", lr),
+                                      betas=(beta1, 0.9))
+
+        # Generator optimizer (separate LR)
+        self.optimizer_g = optim.Adam(self.netg.parameters(),
+                                      lr=getattr(self.opt, "lr_g", lr),
+                                      betas=(beta1, 0.9))
+
+        # Discriminator optimizer (separate LR)
+        self.optimizer_d = optim.Adam(self.netd.parameters(),
+                                      lr=getattr(self.opt, "lr_d", lr),
+                                      betas=(beta1, 0.9))
 
 
     # -----------------------
@@ -356,14 +373,14 @@ class TimeGAN(BaseModel):
       # --- Regularizadores estadísticos que ya usabas ---
       # CUIDADO: X_hat y X pueden tener shape [seq, batch, feat] o [batch, seq, feat].
       # Tus líneas actuales asumen índice [0] y [1] como (stat, time?) → no las toco para mantener compatibilidad.
-      self.err_g_V1 = torch.mean(torch.abs(
-          torch.sqrt(torch.std(self.X_hat, [0])[1] + 1e-6) -
-          torch.sqrt(torch.std(self.X,     [0])[1] + 1e-6)
-      ))
-      self.err_g_V2 = torch.mean(torch.abs(
-          (torch.mean(self.X_hat, [0])[0]) -
-          (torch.mean(self.X,     [0])[0])
-      ))
+      real_std = torch.std(self.X, dim=[0,1])
+      fake_std = torch.std(self.X_hat, dim=[0,1])
+      self.err_g_V1 = torch.mean(torch.abs(real_std - fake_std))
+
+      real_mean = torch.mean(self.X, dim=[0,1])
+      fake_mean = torch.mean(self.X_hat, dim=[0,1])
+      self.err_g_V2 = torch.mean(torch.abs(real_mean - fake_mean))
+
 
       # --- Pérdida de supervisión (igual que antes) ---
       self.err_s = self.l_mse(self.H_supervise[:, :-1, :], self.H[:, 1:, :])
@@ -398,37 +415,33 @@ class TimeGAN(BaseModel):
 
     # GRADIENT PENALTY NEW
     def gradient_penalty(self, real, fake):
-      """Gradient Penalty adaptado para TimeGAN. real, fake: [seq_len, batch, hidden_dim]"""
-      seq_len, batch_size, hidden_dim = real.size()
 
-      # alpha por BATCH (NO por tiempo)
-      alpha = torch.rand(1, batch_size, 1).to(self.device)
-      alpha = alpha.expand(seq_len, batch_size, hidden_dim)
+      batch_size, seq_len, hidden_dim = real.size()
 
-      # interpolación entre real y fake
+      alpha = torch.rand(batch_size, 1, 1).to(self.device)
+      alpha = alpha.expand(batch_size, seq_len, hidden_dim)
+
       interpolates = alpha * real + (1 - alpha) * fake
       interpolates.requires_grad_(True)
 
-      # pasar por el critic
       d_interpolates = self.netd(interpolates)
 
-      # calcular gradiente dD/d(interpolates)
-      grad = torch.autograd.grad(
+      grad_outputs = torch.ones_like(d_interpolates)
+
+      gradients = torch.autograd.grad(
           outputs=d_interpolates,
           inputs=interpolates,
-          grad_outputs=torch.ones_like(d_interpolates),
+          grad_outputs=grad_outputs,
           create_graph=True,
           retain_graph=True,
           only_inputs=True
       )[0]
 
-      # grad: [seq_len, batch, hidden_dim]
-      # norma L2 por feature y promedio temporal
-      grad_norm = grad.reshape(seq_len, batch_size, -1).norm(2, dim=2)  # [seq_len, batch]
-      grad_norm = grad_norm.mean(dim=0)  # promedio sobre seq_len → [batch]
+      gradients = gradients.reshape(batch_size, -1)
+      gp = ((gradients.norm(2, dim=1) - 1) ** 2).mean()
 
-      gp = ((grad_norm - 1) ** 2).mean()
       return gp
+
 
 
 

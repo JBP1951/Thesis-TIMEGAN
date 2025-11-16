@@ -57,7 +57,7 @@ class Encoder(nn.Module):
     """
     def __init__(self, opt):
         super(Encoder, self).__init__()
-        self.rnn = nn.GRU(input_size=opt.z_dim, hidden_size=opt.hidden_dim, num_layers=opt.num_layer)
+        self.rnn = nn.GRU(input_size=opt.z_dim, hidden_size=opt.hidden_dim, num_layers=opt.num_layer, batch_first=True)
         self.ln = nn.LayerNorm(opt.hidden_dim)   # NEW
         self.fc = nn.Linear(opt.hidden_dim, opt.hidden_dim)
         self.sigmoid = nn.Sigmoid()
@@ -67,8 +67,7 @@ class Encoder(nn.Module):
         e_outputs, _ = self.rnn(x)        # GRU output
         e_outputs = self.ln(e_outputs)    # NEW
         H = self.fc(e_outputs)            # project
-        if sigmoid:
-            H = self.sigmoid(H)
+       
         return H
 
 
@@ -110,7 +109,7 @@ class Generator(nn.Module):
     """
     def __init__(self, opt):
         super(Generator, self).__init__()
-        self.rnn = nn.GRU(input_size=opt.z_dim, hidden_size=opt.hidden_dim, num_layers=opt.num_layer)
+        self.rnn = nn.GRU(input_size=opt.z_dim, hidden_size=opt.hidden_dim, num_layers=opt.num_layer, batch_first=True)
         self.ln = nn.LayerNorm(opt.hidden_dim)     # NEW
         self.fc = nn.Linear(opt.hidden_dim, opt.hidden_dim)
         self.sigmoid = nn.Sigmoid()
@@ -120,8 +119,7 @@ class Generator(nn.Module):
         g_outputs, _ = self.rnn(z)
         g_outputs = self.ln(g_outputs)             # NEW
         E = self.fc(g_outputs)
-        if sigmoid:
-            E = self.sigmoid(E)
+        
         return E
 
 
@@ -136,7 +134,7 @@ class Supervisor(nn.Module):
     """
     def __init__(self, opt):
         super(Supervisor, self).__init__()
-        self.rnn = nn.GRU(input_size=opt.hidden_dim, hidden_size=opt.hidden_dim, num_layers=opt.num_layer)
+        self.rnn = nn.GRU(input_size=opt.hidden_dim, hidden_size=opt.hidden_dim, num_layers=opt.num_layer, batch_first=True)
         self.ln = nn.LayerNorm(opt.hidden_dim)     # NEW
         self.fc = nn.Linear(opt.hidden_dim, opt.hidden_dim)
         self.sigmoid = nn.Sigmoid()
@@ -146,8 +144,7 @@ class Supervisor(nn.Module):
         s_outputs, _ = self.rnn(h)
         s_outputs = self.ln(s_outputs)             # NEW
         S = self.fc(s_outputs)
-        if sigmoid:
-            S = self.sigmoid(S)
+        
         return S
 
 
@@ -167,7 +164,7 @@ class Discriminator(nn.Module):
         self.rnn = nn.GRU(
             input_size=opt.hidden_dim,
             hidden_size=opt.hidden_dim,
-            num_layers=opt.num_layer
+            num_layers=opt.num_layer, batch_first=True
         )
 
         # NEW: LayerNorm after the GRU (recommended in the paper)
