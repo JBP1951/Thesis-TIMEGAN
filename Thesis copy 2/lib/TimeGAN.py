@@ -41,6 +41,11 @@ class BaseModel():
     self.min_val = None
     self.max_val = None
 
+    # ----------------------------------------------
+    # AUTO AJUSTE: z_dim = número de features reales
+    # ----------------------------------------------
+    self.opt.z_dim = self.ori_data.shape[2]
+    print(f"[INFO] Auto-set z_dim = {self.opt.z_dim} (feature size from data)")
 
     #THIS LINE WAS ADDED
             # ✅ Automatically adapt latent and input dimensions to data
