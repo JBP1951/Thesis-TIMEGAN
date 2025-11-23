@@ -55,7 +55,7 @@ class Options():
         # -----------------------------
         self.parser.add_argument(
             '--z_dim',
-            default=12,
+            default=32,
             type=int,
             help='Dimension of latent vector z'
         )
@@ -67,7 +67,7 @@ class Options():
         )
         self.parser.add_argument(
             '--num_layer',
-            default=3,
+            default=2,
             type=int,
             help='Number of recurrent layers,number of layers (should be optimized)'
         )

@@ -4,6 +4,7 @@ import numpy as np
 import scipy.io as sio
 from sklearn.preprocessing import MinMaxScaler
 import glob
+import h5py
 
 # -------------------------------------------------------------
 # (1) Min-Max normalization
@@ -107,43 +108,81 @@ def sine_data_generation(no, seq_len, dim):
 # (5) Unified loader (similar to TimeGAN's load_data)
 # -------------------------------------------------------------
 
+
 def load_data(data_type, seq_len, file_list=None, step=1, max_sequences=None):
     """
-    Load and preprocess data for TimeGAN.
-    Performs:
-        - concatenation
-        - MinMax normalization (ONE TIME ONLY)
-        - sliding-window with step
-        - sequence limit (max_sequences)
+    Carga archivos MATLAB v7.3 (HDF5) con señales procesadas.
+    Devuelve:
+        - sequences: ventanas de tamaño seq_len
+        - all_scalers: lista de normalizadores (uno por archivo)
+        - feature_names: nombres de columnas
     """
-    if data_type == "sine":
-        no, dim = 10000, 5
-        return sine_data_generation(no, seq_len, dim)
 
-    elif data_type == "mytests":
+    if data_type != "mytests":
+        raise NotImplementedError("Only mytests is implemented.")
 
-        # 1) Load + concatenate all .mat files
-        data = []
-        for f in file_list:
-            mat = sio.loadmat(f)
-            data.append(mat['data_all'])
+    mat_path = file_list[0]
+    print(f"📌 Loading: {mat_path}")
 
-        data_global = np.vstack(data)
-        print(f"📌 Raw concatenated data: {data_global.shape}")
+    sequences = []       # todas las ventanas se juntan aquí
+    all_scalers = []     # scaler por archivo
+    feature_names = None # se llena solo una vez
 
-        # 2) Global Min-Max normalization
-        norm_data, scaler = MinMax_Scaler(data_global)
-        print("📌 Applied MinMax normalization")
+    with h5py.File(mat_path, "r") as f:
 
-        # 3) Sliding-window + step + limit sequences
-        sequences = real_data_loading(
-            norm_data,
-            seq_len,
-            step=step,
-            max_sequences=max_sequences
-        )
+        data_all = f["data_all"]
+        n_files  = data_all.shape[1]
 
-        return sequences, scaler
+        for i in range(n_files):
+
+            ref = data_all[0][i]
+            entry = f[ref]
+
+            sig_group = entry["signals_processed"]
+
+            # === 1) Orden estable de columnas ===
+            sig_names = sorted(list(sig_group.keys()))
+
+            # Guardar feature names solo una vez
+            if feature_names is None:
+                feature_names = sig_names
+                print(f"📌 Feature order: {feature_names}")
+
+            # === 2) Leer señales ===
+            signals = []
+            for s in sig_names:
+                vec = np.array(sig_group[s][:]).reshape(-1)
+                signals.append(vec)
+
+            # formato final:  N × features
+            file_data = np.vstack(signals).T
+
+            # === 3) Normalización por archivo ===
+            scaler = MinMaxScaler()
+            file_data = scaler.fit_transform(file_data)
+            all_scalers.append(scaler)
+
+            # === 4) Crear ventanas ===
+            N = len(file_data)
+            for j in range(0, N - seq_len, step):
+
+                seq = file_data[j:j + seq_len]
+                sequences.append(seq)
+
+                if max_sequences and len(sequences) >= max_sequences:
+                    break
+
+            if max_sequences and len(sequences) >= max_sequences:
+                break
+
+    # === Conversión a array ===
+    sequences = np.asarray(sequences, dtype=np.float32)
+
+    print(f"📌 Total sequences: {len(sequences)} | Each: {seq_len}×{sequences.shape[2]}")
+
+    return sequences, all_scalers, feature_names
+
+
 
 
 
@@ -158,6 +197,8 @@ def batch_generator(data,time, batch_size):
     idx = np.random.permutation(no)
     train_idx = idx[:batch_size]
 
-    X_mb = [data[i] for i in train_idx]
-    T_mb = [time[i] for i in train_idx]
+    X_mb = np.asarray([data[i] for i in train_idx], dtype=np.float32)
+
+    T_mb = np.asarray([time[i] for i in train_idx], dtype=np.int32)
+
     return X_mb,T_mb

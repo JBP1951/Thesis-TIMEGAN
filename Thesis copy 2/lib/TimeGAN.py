@@ -45,8 +45,8 @@ class BaseModel():
     #THIS LINE WAS ADDED
             # ✅ Automatically adapt latent and input dimensions to data
     first_seq = np.asarray(self.ori_data[0])
-    self.opt.z_dim = first_seq.shape[1]
-    print(f"[INFO] Adjusted opt.z_dim to match data feature size: {self.opt.z_dim}")
+    #self.opt.z_dim = first_seq.shape[1]
+    #print(f"[INFO] Adjusted opt.z_dim to match data feature size: {self.opt.z_dim}")
 
 
     # Extract times and maximum sequence length
@@ -313,6 +313,18 @@ class TimeGAN(BaseModel):
         self.optimizer_d = optim.Adam(self.netd.parameters(),
                                       lr=getattr(self.opt, "lr_d", lr),
                                       betas=(beta1, 0.9))
+        
+        # -----------------------------
+        # Add LR schedulers (CTGAN-MSIN paper)
+        # -----------------------------
+        from torch.optim.lr_scheduler import StepLR
+
+        self.scheduler_e = StepLR(self.optimizer_e, step_size=100, gamma=0.96)
+        self.scheduler_r = StepLR(self.optimizer_r, step_size=100, gamma=0.96)
+        self.scheduler_s = StepLR(self.optimizer_s, step_size=100, gamma=0.96)
+        self.scheduler_g = StepLR(self.optimizer_g, step_size=100, gamma=0.96)
+        self.scheduler_d = StepLR(self.optimizer_d, step_size=100, gamma=0.96)
+
 
 
     # -----------------------
@@ -477,8 +489,8 @@ class TimeGAN(BaseModel):
       self.err_d_real = self.l_bce(self.Y_real, torch.ones_like(self.Y_real))
       self.err_d_fake = self.l_bce(self.Y_fake, torch.zeros_like(self.Y_fake))
       self.err_d_fake_e = self.l_bce(self.Y_fake_e, torch.zeros_like(self.Y_fake_e))
-      self.err_d = self.err_d_real + \
-                   self.err_d_fake + \
+      self.err_d = self.err_d_real + 
+                   self.err_d_fake + 
                    self.err_d_fake_e * self.opt.w_gamma
       if self.err_d > 0.15:
         self.err_d.backward(retain_graph=True)'''
@@ -500,6 +512,10 @@ class TimeGAN(BaseModel):
       self.optimizer_e.step()
       self.optimizer_r.step()
 
+      # NEW: LR schedulers
+      self.scheduler_e.step()
+      self.scheduler_r.step()
+
       print(f"[DEBUG] Loss this iteration: {self.loss_er.item():.6f}")
       return float(self.loss_er.item())
 
@@ -511,6 +527,9 @@ class TimeGAN(BaseModel):
       self.backward_er_()
       self.optimizer_e.step()
       self.optimizer_r.step()
+       # NEW
+      self.scheduler_e.step()
+      self.scheduler_r.step()
 
     def optimize_params_s(self):
       self.forward_e()
@@ -518,6 +537,8 @@ class TimeGAN(BaseModel):
       self.optimizer_s.zero_grad()
       self.backward_s()
       self.optimizer_s.step()
+      # NEW
+      self.scheduler_s.step()
       return float(self.err_s.item())   # devolvemos el valor numérico
 
     def optimize_params_g(self):
@@ -532,6 +553,9 @@ class TimeGAN(BaseModel):
       self.backward_g()
       self.optimizer_g.step()
       self.optimizer_s.step()
+      self.scheduler_g.step()
+      self.scheduler_s.step()
+
       return float(self.err_g.item())    #  devolvemos G-loss
 
     def optimize_params_d(self):
@@ -543,4 +567,6 @@ class TimeGAN(BaseModel):
       self.optimizer_d.zero_grad()
       self.backward_d()
       self.optimizer_d.step()
+      # NEW
+      self.scheduler_d.step()
       return float(self.err_d.item())

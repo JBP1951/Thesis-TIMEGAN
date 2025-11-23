@@ -57,17 +57,33 @@ class Encoder(nn.Module):
     """
     def __init__(self, opt):
         super(Encoder, self).__init__()
-        self.rnn = nn.GRU(input_size=opt.z_dim, hidden_size=opt.hidden_dim, num_layers=opt.num_layer, batch_first=True)
-        self.ln = nn.LayerNorm(opt.hidden_dim)   # NEW
+        self.rnn1 = nn.GRU(input_size=opt.z_dim, hidden_size=opt.hidden_dim, num_layers=1, batch_first=True)
+        self.dropout = nn.Dropout(0.2)
+        self.rnn2 = nn.GRU(input_size=opt.hidden_dim, hidden_size=opt.hidden_dim, num_layers=1, batch_first=True)
+
         self.fc = nn.Linear(opt.hidden_dim, opt.hidden_dim)
+
+        self.ln = nn.LayerNorm(opt.hidden_dim)   # NEW
+        
         self.sigmoid = nn.Sigmoid()
         self.apply(_weights_init)
 
     def forward(self, x, sigmoid=True):
-        e_outputs, _ = self.rnn(x)        # GRU output
-        e_outputs = self.ln(e_outputs)    # NEW
-        H = self.fc(e_outputs)            # project
-       
+        # First GRU
+        h1, _ = self.rnn1(x)
+
+        # Dropout
+        h1 = self.dropout(h1)
+
+        # Second GRU
+        h2, _ = self.rnn2(h1)
+
+        # Dense
+        H = self.fc(h2)
+
+        # LayerNorm
+        H = self.ln(H)
+
         return H
 
 
@@ -83,18 +99,33 @@ class Recovery(nn.Module):
     def __init__(self, opt):
         super(Recovery, self).__init__()
         # corregido: mantener hidden_dim en RNN
-        self.rnn = nn.GRU(input_size=opt.hidden_dim, hidden_size=opt.hidden_dim, num_layers=opt.num_layer,batch_first=True)
-        self.ln = nn.LayerNorm(opt.hidden_dim)     # NEW
-        self.fc = nn.Linear(opt.hidden_dim, opt.z_dim)
+        self.rnn1 = nn.GRU(input_size=opt.hidden_dim, hidden_size=opt.hidden_dim, num_layers=1, batch_first=True)
+        self.dropout = nn.Dropout(0.2)
+        self.rnn2 = nn.GRU(input_size=opt.hidden_dim, hidden_size=opt.hidden_dim, num_layers=1, batch_first=True)
+
+         
+        # Dense2: 24 → z_dim  (si z_dim = 3, esto es Dense 3)
+        self.fc_mid = nn.Linear(opt.hidden_dim, opt.hidden_dim)
+        self.ln = nn.LayerNorm(opt.hidden_dim)    
+        self.fc = nn.Linear(opt.hidden_dim, opt.z_dim) # NEW
+        
         self.sigmoid = nn.Sigmoid()
         self.apply(_weights_init)
 
     def forward(self, h, sigmoid=True):
-        r_outputs, _ = self.rnn(h)
-        r_outputs = self.ln(r_outputs)             # NEW
-        X_tilde = self.fc(r_outputs)
+        h1, _ = self.rnn1(h)
+        h1 = self.dropout(h1)
+
+        h2, _ = self.rnn2(h1)
+
+        h2 = self.fc_mid(h2)
+        h2 = self.ln(h2)
+
+        X_tilde = self.fc(h2)
+
         if sigmoid:
             X_tilde = self.sigmoid(X_tilde)
+
         return X_tilde
 
 
@@ -109,15 +140,16 @@ class Generator(nn.Module):
     """
     def __init__(self, opt):
         super(Generator, self).__init__()
-        self.rnn = nn.GRU(input_size=opt.z_dim, hidden_size=opt.hidden_dim, num_layers=opt.num_layer, batch_first=True)
-        self.ln = nn.LayerNorm(opt.hidden_dim)     # NEW
+        self.rnn = nn.GRU(input_size=opt.z_dim, hidden_size=opt.hidden_dim, num_layers=1, batch_first=True)
+        self.dropout = nn.Dropout(0.2)
+      
         self.fc = nn.Linear(opt.hidden_dim, opt.hidden_dim)
         self.sigmoid = nn.Sigmoid()
         self.apply(_weights_init)
 
     def forward(self, z, sigmoid=True):
         g_outputs, _ = self.rnn(z)
-        g_outputs = self.ln(g_outputs)             # NEW
+        g_outputs = self.dropout(g_outputs)             # NEW
         E = self.fc(g_outputs)
         
         return E
@@ -134,15 +166,16 @@ class Supervisor(nn.Module):
     """
     def __init__(self, opt):
         super(Supervisor, self).__init__()
-        self.rnn = nn.GRU(input_size=opt.hidden_dim, hidden_size=opt.hidden_dim, num_layers=opt.num_layer, batch_first=True)
-        self.ln = nn.LayerNorm(opt.hidden_dim)     # NEW
+        self.rnn = nn.GRU(input_size=opt.hidden_dim, hidden_size=opt.hidden_dim, num_layers=1, batch_first=True)
+        self.dropout = nn.Dropout(0.2)
+
         self.fc = nn.Linear(opt.hidden_dim, opt.hidden_dim)
         self.sigmoid = nn.Sigmoid()
         self.apply(_weights_init)
 
     def forward(self, h, sigmoid=True):
         s_outputs, _ = self.rnn(h)
-        s_outputs = self.ln(s_outputs)             # NEW
+        s_outputs = self.dropout(s_outputs)           # NEW
         S = self.fc(s_outputs)
         
         return S
@@ -164,15 +197,18 @@ class Discriminator(nn.Module):
         self.rnn = nn.GRU(
             input_size=opt.hidden_dim,
             hidden_size=opt.hidden_dim,
-            num_layers=opt.num_layer, batch_first=True
-        )
-
+            num_layers=1, batch_first=True)
+        self.dropout = nn.Dropout(0.2)
         # NEW: LayerNorm after the GRU (recommended in the paper)
-        self.ln = nn.LayerNorm(opt.hidden_dim)
+       
 
         # IMPORTANT: for WGAN-GP we must REMOVE spectral norm and sigmoid.
-        self.fc = nn.Linear(opt.hidden_dim, 1)
+        
+        self.fc_mid = nn.Linear(opt.hidden_dim, opt.hidden_dim)
+        self.ln = nn.LayerNorm(opt.hidden_dim)
+        
 
+        self.fc = nn.Linear(opt.hidden_dim, 1)
         self.apply(_weights_init)
 
     def forward(self, h, sigmoid: bool = False):
@@ -180,13 +216,14 @@ class Discriminator(nn.Module):
         h: [seq_len, batch, hidden_dim]
         """
         with torch.backends.cudnn.flags(enabled=False):
-            d_outputs, _ = self.rnn(h)
-       
-        d_outputs = self.ln(d_outputs)       # layer normalization (NEW)
+            d1, _ = self.rnn(h)
+        d1 = self.dropout(d1)
 
-        logits = self.fc(d_outputs)          # raw critic score
+        d1 = self.fc_mid(d1)
+        d1 = self.ln(d1)
 
-        # sigmoid is ignored because WGAN uses raw scores
+        logits = self.fc(d1)
+
         return logits
         
     ''' self.fc = nn.Linear(opt.hidden_dim, 1)  # <- corregido para probabilidad

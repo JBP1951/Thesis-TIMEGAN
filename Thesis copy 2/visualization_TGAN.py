@@ -23,8 +23,9 @@ def visualization(ori_data, generated_data, analysis):
     min_len = min(min(seq.shape[0] for seq in ori_data),
                   min(seq.shape[0] for seq in generated_data))
 
-    ori_data = np.array([seq[:min_len, :] for seq in ori_data])
-    generated_data = np.array([seq[:min_len, :] for seq in generated_data])
+    ori_data = np.asarray(ori_data, dtype=np.float32)
+    generated_data = np.asarray(generated_data, dtype=np.float32)
+
 
     no, seq_len, dim = ori_data.shape
 
