@@ -371,7 +371,7 @@ class TimeGAN(BaseModel):
     def backward_er(self):
       self.err_er = self.l_mse(self.X_tilde, self.X)
       self.err_er.backward(retain_graph=True)
-      print("Loss: ", self.err_er)
+      #print("Loss: ", self.err_er)
 
     def backward_er_(self):
       self.err_er_ = self.l_mse(self.X_tilde, self.X)
@@ -409,7 +409,7 @@ class TimeGAN(BaseModel):
                   + torch.sqrt(self.err_s)
 
       self.err_g.backward(retain_graph=True)
-      print("Loss G (total): ", self.err_g)
+      #print("Loss G (total): ", self.err_g)
 
       '''
       self.err_g_U = self.l_bce(self.Y_fake, torch.ones_like(self.Y_fake))
@@ -428,7 +428,7 @@ class TimeGAN(BaseModel):
     def backward_s(self):
       self.err_s = self.l_mse(self.H[:,1:,:], self.H_supervise[:,:-1,:])
       self.err_s.backward(retain_graph=True)
-      print("Loss S: ", self.err_s)
+      #print("Loss S: ", self.err_s)
 
     # GRADIENT PENALTY NEW
     def gradient_penalty(self, real, fake):
@@ -521,7 +521,7 @@ class TimeGAN(BaseModel):
       self.scheduler_e.step()
       self.scheduler_r.step()
 
-      print(f"[DEBUG] Loss this iteration: {self.loss_er.item():.6f}")
+      #print(f"[DEBUG] Loss this iteration: {self.loss_er.item():.6f}")
       return float(self.loss_er.item())
 
     def optimize_params_er_(self):
