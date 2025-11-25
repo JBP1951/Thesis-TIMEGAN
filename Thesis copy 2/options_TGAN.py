@@ -36,6 +36,39 @@ class Options():
             help='Type of dataset to use: sine (synthetic) or my_signals (real signals)'
         )
 
+                # -----------------------------
+        #  Conditional TimeGAN options
+        # -----------------------------
+        self.parser.add_argument(
+            '--conditional',
+            action='store_true',
+            help='Enable conditional TimeGAN (use C_time & C_static)'
+        )
+
+        # Dimensiones condicionales (por ahora las ponemos fijas)
+        self.parser.add_argument(
+            '--c_time_dim',
+            type=int,
+            default=3,
+            help='Dim of time-varying conditions (Motor_current, Speed, Temperature)'
+        )
+
+        self.parser.add_argument(
+            '--c_static_dim',
+            type=int,
+            default=2,
+            help='Dim of static conditions (weight, distance)'
+        )
+
+        # Dim de las series principales (acelerómetros)
+        self.parser.add_argument(
+            '--x_dim',
+            type=int,
+            default=4,
+            help='Dim of main signals X (accelerometers)'
+        )
+
+
         self.parser.add_argument('--gp_lambda', 
             type=float, default=10.0, help='Gradient penalty weight')
 
@@ -163,8 +196,20 @@ class Options():
         if self.opt.name == 'experiment_TGAN':
             self.opt.name = "%s/%s" % (self.opt.model, self.opt.data_name)
         expr_dir = os.path.join(self.opt.outf, self.opt.name)
+        
         if not os.path.isdir(expr_dir):
             os.makedirs(expr_dir)
+
+                # -----------------------------
+        # Derivar input_dim para el Encoder
+        # -----------------------------
+        if self.opt.conditional:
+            # X (acelerómetros) + C_time (RPM,T,current) + C_static (peso,dist)
+            self.opt.input_dim = self.opt.x_dim + self.opt.c_time_dim + self.opt.c_static_dim
+        else:
+            # Solo X
+            self.opt.input_dim = self.opt.x_dim
+
 
         # Save options to disk
         file_name = os.path.join(expr_dir, 'opt.txt')

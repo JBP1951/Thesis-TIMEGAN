@@ -57,9 +57,21 @@ class Encoder(nn.Module):
     """
     def __init__(self, opt):
         super(Encoder, self).__init__()
-        self.rnn1 = nn.GRU(input_size=opt.z_dim, hidden_size=opt.hidden_dim, num_layers=1, batch_first=True)
+        
+        self.rnn1 = nn.GRU(
+            input_size=opt.input_dim,     # ← AHORA USAMOS TODA LA ENTRADA CONCATENADA
+            hidden_size=opt.hidden_dim,
+            num_layers=1,
+            batch_first=True
+        )
+
         self.dropout = nn.Dropout(0.2)
-        self.rnn2 = nn.GRU(input_size=opt.hidden_dim, hidden_size=opt.hidden_dim, num_layers=1, batch_first=True)
+        
+        self.rnn2 = nn.GRU(input_size=opt.hidden_dim,
+                   hidden_size=opt.hidden_dim,
+                   num_layers=1,
+                   batch_first=True)
+
 
         self.fc = nn.Linear(opt.hidden_dim, opt.hidden_dim)
 
@@ -98,17 +110,30 @@ class Recovery(nn.Module):
     """
     def __init__(self, opt):
         super(Recovery, self).__init__()
-        # corregido: mantener hidden_dim en RNN
-        self.rnn1 = nn.GRU(input_size=opt.hidden_dim, hidden_size=opt.hidden_dim, num_layers=1, batch_first=True)
-        self.dropout = nn.Dropout(0.2)
-        self.rnn2 = nn.GRU(input_size=opt.hidden_dim, hidden_size=opt.hidden_dim, num_layers=1, batch_first=True)
 
-         
-        # Dense2: 24 → z_dim  (si z_dim = 3, esto es Dense 3)
+        # Las entradas aquí son H, que tiene dim = hidden_dim
+        self.rnn1 = nn.GRU(
+            input_size=opt.hidden_dim,
+            hidden_size=opt.hidden_dim,
+            num_layers=1,
+            batch_first=True
+        )
+
+        self.dropout = nn.Dropout(0.2)
+
+        self.rnn2 = nn.GRU(
+            input_size=opt.hidden_dim,
+            hidden_size=opt.hidden_dim,
+            num_layers=1,
+            batch_first=True
+        )
+
         self.fc_mid = nn.Linear(opt.hidden_dim, opt.hidden_dim)
-        self.ln = nn.LayerNorm(opt.hidden_dim)    
-        self.fc = nn.Linear(opt.hidden_dim, opt.z_dim) # NEW
-        
+        self.ln = nn.LayerNorm(opt.hidden_dim)
+
+        # 🔥 SALIDA EN ESPACIO DE LOS ACELERÓMETROS (x_dim = 4)
+        self.fc = nn.Linear(opt.hidden_dim, opt.x_dim)
+
         self.sigmoid = nn.Sigmoid()
         self.apply(_weights_init)
 
@@ -140,19 +165,38 @@ class Generator(nn.Module):
     """
     def __init__(self, opt):
         super(Generator, self).__init__()
-        self.rnn = nn.GRU(input_size=opt.z_dim, hidden_size=opt.hidden_dim, num_layers=1, batch_first=True)
+        
+        self.rnn = nn.GRU(
+            input_size=opt.z_dim + opt.c_time_dim + opt.c_static_dim,
+            hidden_size=opt.hidden_dim,
+            num_layers=1,
+            batch_first=True
+        )
+
+
         self.dropout = nn.Dropout(0.2)
       
         self.fc = nn.Linear(opt.hidden_dim, opt.hidden_dim)
         self.sigmoid = nn.Sigmoid()
         self.apply(_weights_init)
 
-    def forward(self, z, sigmoid=True):
-        g_outputs, _ = self.rnn(z)
-        g_outputs = self.dropout(g_outputs)             # NEW
+    def forward(self, z, c_time=None, c_static=None):
+        """
+        z:        [batch, seq, z_dim]
+        c_time:   [batch, seq, c_time_dim]
+        c_static: [batch, seq, c_static_dim]  (YA repetido en el tiempo)
+        """
+        if (c_time is not None) and (c_static is not None):
+            # Aquí c_static YA viene con dimensión temporal
+            z_full = torch.cat([z, c_time, c_static], dim=2)
+        else:
+            z_full = z
+
+        g_outputs, _ = self.rnn(z_full)
+        g_outputs = self.dropout(g_outputs)
         E = self.fc(g_outputs)
-        
         return E
+
 
 
 # -------------------------------

@@ -110,13 +110,6 @@ def sine_data_generation(no, seq_len, dim):
 
 
 def load_data(data_type, seq_len, file_list=None, step=1, max_sequences=None):
-    """
-    Carga archivos MATLAB v7.3 (HDF5) con señales procesadas.
-    Devuelve:
-        - sequences: ventanas de tamaño seq_len
-        - all_scalers: lista de normalizadores (uno por archivo)
-        - feature_names: nombres de columnas
-    """
 
     if data_type != "mytests":
         raise NotImplementedError("Only mytests is implemented.")
@@ -124,10 +117,19 @@ def load_data(data_type, seq_len, file_list=None, step=1, max_sequences=None):
     mat_path = file_list[0]
     print(f"📌 Loading: {mat_path}")
 
-    sequences = []       # todas las ventanas se juntan aquí
-    all_scalers = []     # scaler por archivo
-    feature_names = None # se llena solo una vez
+    # Listas de salida
+    X_list        = []   # acelerómetros
+    C_time_list   = []   # rpm, temp, current
+    C_static_list = []   # peso, distancia
+    all_scalers   = []   # un scaler por experimento
+    feature_names = None
 
+    # Nombres de señales
+    accel_names     = ['Accel1', 'Accel2', 'Accel3', 'Accel4']
+    c_time_names    = ['Motor_current', 'Speed', 'Temperature']
+    all_signal_names = accel_names + c_time_names
+
+    import h5py
     with h5py.File(mat_path, "r") as f:
 
         data_all = f["data_all"]
@@ -135,52 +137,71 @@ def load_data(data_type, seq_len, file_list=None, step=1, max_sequences=None):
 
         for i in range(n_files):
 
-            ref = data_all[0][i]
+            ref   = data_all[0][i]
             entry = f[ref]
 
             sig_group = entry["signals_processed"]
-
-            # === 1) Orden estable de columnas ===
-            sig_names = sorted(list(sig_group.keys()))
+            meta      = entry["meta"]
 
             # Guardar feature names solo una vez
             if feature_names is None:
-                feature_names = sig_names
+                feature_names = all_signal_names
                 print(f"📌 Feature order: {feature_names}")
 
-            # === 2) Leer señales ===
-            signals = []
-            for s in sig_names:
-                vec = np.array(sig_group[s][:]).reshape(-1)
-                signals.append(vec)
+            # -------- 1) LEER SEÑALES DINÁMICAS --------
+            # Acelerómetros
+            accel_signals = []
+            for name in accel_names:
+                vec = np.array(sig_group[name][:]).reshape(-1)
+                accel_signals.append(vec)
+            accel_data = np.vstack(accel_signals).T    # [N, 4]
 
-            # formato final:  N × features
-            file_data = np.vstack(signals).T
+            # Condicionales en el tiempo
+            c_time_signals = []
+            for name in c_time_names:
+                vec = np.array(sig_group[name][:]).reshape(-1)
+                c_time_signals.append(vec)
+            c_time_data = np.vstack(c_time_signals).T  # [N, 3]
 
-            # === 3) Normalización por archivo ===
-            scaler = MinMaxScaler()
-            file_data = scaler.fit_transform(file_data)
+            # Comprobar misma longitud
+            N = accel_data.shape[0]
+            if c_time_data.shape[0] != N:
+                raise ValueError(f"Longitudes distintas en señales dinámicas en experimento {i}")
+
+            # -------- 2) NORMALIZACIÓN CONJUNTA --------
+            full_data = np.concatenate([accel_data, c_time_data], axis=1)  # [N, 7]
+            scaler = MinMaxScaler(feature_range=(0, 1))
+            full_norm = scaler.fit_transform(full_data)
             all_scalers.append(scaler)
 
-            # === 4) Crear ventanas ===
-            N = len(file_data)
+            accel_norm  = full_norm[:, :len(accel_names)]           # [N, 4]
+            c_time_norm = full_norm[:, len(accel_names):]           # [N, 3]
+
+            # -------- 3) LEER CONDICIONALES ESTÁTICAS --------
+            # meta['weight'], meta['distance'] deberían ser escalares
+            weight   = float(np.array(meta['weight'][:]).reshape(-1)[0])
+            distance = float(np.array(meta['distance'][:]).reshape(-1)[0])
+            c_static_vec = np.array([weight, distance], dtype=np.float32)  # [2]
+
+            # -------- 4) CREAR VENTANAS --------
             for j in range(0, N - seq_len, step):
 
-                seq = file_data[j:j + seq_len]
-                sequences.append(seq)
+                x_win      = accel_norm[j:j+seq_len, :]      # [seq_len, 4]
+                c_time_win = c_time_norm[j:j+seq_len, :]     # [seq_len, 3]
 
-                if max_sequences and len(sequences) >= max_sequences:
+                X_list.append(x_win.astype(np.float32))
+                C_time_list.append(c_time_win.astype(np.float32))
+                C_static_list.append(c_static_vec)           # misma cond. para toda la secuencia
+
+                if max_sequences and len(X_list) >= max_sequences:
                     break
 
-            if max_sequences and len(sequences) >= max_sequences:
+            if max_sequences and len(X_list) >= max_sequences:
                 break
 
-    # === Conversión a array ===
-    sequences = np.asarray(sequences, dtype=np.float32)
+    print(f"📌 Total sequences: {len(X_list)} | Each: {seq_len}×{X_list[0].shape[1]}")
 
-    print(f"📌 Total sequences: {len(sequences)} | Each: {seq_len}×{sequences.shape[2]}")
-
-    return sequences, all_scalers, feature_names
+    return X_list, C_time_list, C_static_list, all_scalers, feature_names
 
 
 
@@ -202,3 +223,24 @@ def batch_generator(data,time, batch_size):
     T_mb = np.asarray([time[i] for i in train_idx], dtype=np.int32)
 
     return X_mb,T_mb
+
+def batch_generator_conditional(X, C_time, C_static, time, batch_size):
+
+    no = len(X)
+    idx = np.random.permutation(no)
+    train_idx = idx[:batch_size]
+
+    # --- X y C_time normales ---
+    X_mb      = np.asarray([X[i] for i in train_idx], dtype=np.float32)
+    C_time_mb = np.asarray([C_time[i] for i in train_idx], dtype=np.float32)
+
+    # --- C_static debe quedar [B, 1, 2] ---
+    C_static_mb = np.asarray([C_static[i] for i in train_idx], dtype=np.float32)
+
+    # Si C_static_mb es (B,2), lo expandimos a (B,1,2)
+    if C_static_mb.ndim == 2:
+        C_static_mb = C_static_mb[:, np.newaxis, :]
+
+    T_mb = np.asarray([time[i] for i in train_idx], dtype=np.int32)
+
+    return X_mb, C_time_mb, C_static_mb, T_mb

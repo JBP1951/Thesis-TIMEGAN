@@ -17,7 +17,7 @@ import torch.nn as nn
 import torch.optim as optim
 
 # Use your data_preprocess batch generator (must provide batch_generator)
-from lib.data_preprocess import batch_generator
+from lib.data_preprocess import batch_generator, batch_generator_conditional
 
 # Use the utils file adapted for your repo (utils_TGAN.py)
 from utils_TGAN import extract_time, random_generator, NormMinMax
@@ -36,30 +36,57 @@ class BaseModel():
     self.opt = opt
 
     # Tus datos YA vienen normalizados desde data_preprocess.py
-# No volvemos a normalizar aquí (evita MemoryError y doble escalado)
-    self.ori_data = ori_data
+    # No volvemos a normalizar aquí (evita MemoryError y doble escalado)
+        # Tus datos YA vienen normalizados
     self.min_val = None
     self.max_val = None
 
-    # ----------------------------------------------
-    # AUTO AJUSTE: z_dim = número de features reales
-    # ----------------------------------------------
-    self.opt.z_dim = self.ori_data.shape[2]
-    print(f"[INFO] Auto-set z_dim = {self.opt.z_dim} (feature size from data)")
+    # ------------------------------
+    # ¿Es dict (condicional) o array?
+    # ------------------------------
+    if isinstance(ori_data, dict):
+        # caso condicional
+        self.conditional   = True
+        self.X_all         = ori_data["X"]         # lista de [L, 4]
+        self.C_time_all    = ori_data["C_time"]    # lista de [L, 3]
+        self.C_static_all  = ori_data["C_static"]  # lista de [2]
+    else:
+        # caso antiguo (no condicional)
+        self.conditional   = False
+        self.X_all         = ori_data              # lista/array de [L, dim]
+        self.C_time_all    = None
+        self.C_static_all  = None
 
-    #THIS LINE WAS ADDED
-            # ✅ Automatically adapt latent and input dimensions to data
-    first_seq = np.asarray(self.ori_data[0])
-    #self.opt.z_dim = first_seq.shape[1]
-    #print(f"[INFO] Adjusted opt.z_dim to match data feature size: {self.opt.z_dim}")
+    # ------------------------------
+    # Dimensión de datos a generar (X)
+    # ------------------------------
+    first_seq = np.asarray(self.X_all[0])
+    self.x_dim = first_seq.shape[1]
 
+    print(f"[INFO] Detected data feature dim (x_dim) = {self.x_dim}")
+    # Muy importante: dejamos z_dim (noise) como en Options
+    print(f"[INFO] Using latent noise dim (z_dim)   = {self.opt.z_dim}")
 
-    # Extract times and maximum sequence length
-    self.ori_time, self.max_seq_len = extract_time(self.ori_data)
+    # ------------------------------
+    # Dimensiones de condicionales
+    # ------------------------------
+    if self.conditional:
+        self.c_time_dim   = self.C_time_all[0].shape[1]   # 3 → [Motor, Speed, Temp]
+        self.c_static_dim = self.C_static_all[0].shape[-1]# 2 → [weight, distance]
+    else:
+        self.c_time_dim   = 0
+        self.c_static_dim = 0
 
-    # Data count (assumes ori_data convertible to numpy array of shape [N, seq_len, feat])
-    # ori_data es una lista de secuencias [seq_len, dim]
-    self.data_num = len(self.ori_data)
+    # Guardamos en opt para que las redes puedan usarlos
+    self.opt.x_dim        = self.x_dim
+    self.opt.c_time_dim   = self.c_time_dim
+    self.opt.c_static_dim = self.c_static_dim
+    self.opt.conditional  = self.conditional
+
+    # Tiempos (solo dependen de X)
+    self.ori_time, self.max_seq_len = extract_time(self.X_all)
+    self.data_num = len(self.X_all)
+
 
 
     # Train/test directories for checkpoints/logs
@@ -109,17 +136,58 @@ class BaseModel():
     torch.save({'epoch': epoch + 1, 'state_dict': self.nets.state_dict()},
                '%s/netS.pth' % (weight_dir))
 
+  def sample_batch(self):
+   
+
+    if self.opt.conditional:
+        X_mb, C_time_mb, C_static_mb, T_mb = batch_generator_conditional(
+            self.X_all,
+            self.C_time_all,
+            self.C_static_all,
+            self.ori_time,
+            self.opt.batch_size
+        )
+
+        self.X0 = X_mb
+        self.T  = T_mb
+
+        # 🔹 Convertir a tensores
+        self.X            = torch.tensor(X_mb,        dtype=torch.float32).to(self.device)
+        self.C_time_mb    = torch.tensor(C_time_mb,   dtype=torch.float32).to(self.device)   # [B, T, 3]
+
+        self.C_static_mb  = torch.tensor(C_static_mb, dtype=torch.float32).to(self.device)
+
+    # --- FIX CRÍTICO ---
+    if self.C_static_mb.dim() == 1:
+        # Convertir (2,) → (1, 2)
+        self.C_static_mb = self.C_static_mb.unsqueeze(0)
+
+
+    else:
+        X_mb, T_mb = batch_generator(
+            self.X_all,
+            self.ori_time,
+            self.opt.batch_size
+        )
+
+        self.X0 = X_mb
+        self.T  = T_mb
+
+        self.X            = torch.tensor(X_mb, dtype=torch.float32).to(self.device)
+        self.C_time_mb    = None
+        self.C_static_mb  = None
+
+
+
+
 
   def train_one_iter_er(self):
     """ Train encoder & recovery for one mini-batch """
     self.nete.train()
     self.netr.train()
 
-    # set mini-batch
-    self.X0, self.T = batch_generator(self.ori_data, self.ori_time, self.opt.batch_size)
-    self.X = torch.tensor(self.X0, dtype=torch.float32).to(self.device)
+    self.sample_batch()   # ← aquí obtenemos X, C_time, C_static, T
 
-    # train encoder & decoder
     loss = self.optimize_params_er()
     return loss
 
@@ -129,8 +197,7 @@ class BaseModel():
     self.nete.train()
     self.netr.train()
 
-    self.X0, self.T = batch_generator(self.ori_data, self.ori_time, self.opt.batch_size)
-    self.X = torch.tensor(self.X0, dtype=torch.float32).to(self.device)
+    self.sample_batch()
 
     self.optimize_params_er_()
     
@@ -139,8 +206,9 @@ class BaseModel():
   def train_one_iter_s(self):
     """ Train supervisor """
     self.nets.train()
-    self.X0, self.T = batch_generator(self.ori_data, self.ori_time, self.opt.batch_size)
-    self.X = torch.tensor(self.X0, dtype=torch.float32).to(self.device)
+
+    self.sample_batch()
+
     s_loss = self.optimize_params_s()
     return s_loss
 
@@ -149,8 +217,9 @@ class BaseModel():
   def train_one_iter_g(self):
     """ Train generator-related parts """
     self.netg.train()
-    self.X0, self.T = batch_generator(self.ori_data, self.ori_time, self.opt.batch_size)
-    self.X = torch.tensor(self.X0, dtype=torch.float32).to(self.device)
+
+    self.sample_batch()
+
     self.Z = random_generator(self.opt.batch_size, self.opt.z_dim, self.T, self.max_seq_len)
     self.Z = np.asarray(self.Z)  # make sure numpy array
     g_loss  = self.optimize_params_g()
@@ -160,8 +229,9 @@ class BaseModel():
   def train_one_iter_d(self):
     """ Train discriminator """
     self.netd.train()
-    self.X0, self.T = batch_generator(self.ori_data, self.ori_time, self.opt.batch_size)
-    self.X = torch.tensor(self.X0, dtype=torch.float32).to(self.device)
+
+    self.sample_batch()
+
     self.Z = random_generator(self.opt.batch_size, self.opt.z_dim, self.T, self.max_seq_len)
     self.Z = np.asarray(self.Z)
     d_loss  = self.optimize_params_d()
@@ -245,28 +315,35 @@ class BaseModel():
 
 
 
-
 class TimeGAN(BaseModel):
-    """TimeGAN class (keeps original flow and method names)"""
 
-    @property
-    def name(self):
-      return 'TimeGAN'
+    def __init__(self, opt, X_list, C_time_list=None, C_static_list=None):
 
-    def __init__(self, opt, ori_data):
-      super(TimeGAN, self).__init__(opt, ori_data)
+        # PREPARAR DICCIONARIO PARA BASEMODEL
+      if getattr(opt, "conditional", False):
+            data_dict = {
+                "X": X_list,
+                "C_time": C_time_list,
+                "C_static": C_static_list
+            }
+      else:
+            data_dict = X_list
 
-      # -- Misc attributes
+        # BASEMODEL RECIBE TODO
+      super(TimeGAN, self).__init__(opt, data_dict)
+      # Ahora que BaseModel ya extrajo las dims reales, recalculamos input_dim
+      self.opt.input_dim = self.opt.x_dim + self.opt.c_time_dim + self.opt.c_static_dim
+
+
+
+        # Crear redes como siempre
       self.epoch = 0
-      self.times = []
       self.total_steps = 0
-
-      # Create and initialize networks.
-      self.nete = Encoder(self.opt).to(self.device)
-      self.netr = Recovery(self.opt).to(self.device)
-      self.netg = Generator(self.opt).to(self.device)
-      self.netd = Discriminator(self.opt).to(self.device)
-      self.nets = Supervisor(self.opt).to(self.device)
+      self.nete = Encoder(opt).to(self.device)
+      self.netr = Recovery(opt).to(self.device)
+      self.netg = Generator(opt).to(self.device)
+      self.netd = Discriminator(opt).to(self.device)
+      self.nets = Supervisor(opt).to(self.device)
 
       # Optionally load pre-trained models (kept same)
       if getattr(self.opt, "resume", '') != '':
@@ -335,16 +412,44 @@ class TimeGAN(BaseModel):
     # -----------------------
     # Forward helpers (same names as original)
     # -----------------------
+    
     def forward_e(self):
-      self.H = self.nete(self.X)
+     
 
-    def forward_er(self):
-      self.H = self.nete(self.X)
-      self.X_tilde = self.netr(self.H)
+      if getattr(self.opt, "conditional", False) and (self.C_time_mb is not None):
+          # Repetimos la condicional estática a lo largo de todos los pasos de tiempo
+          B, T, _ = self.X.shape
+          C_static_rep = self.C_static_mb.repeat(1, T, 1)  # [B, T, c_static_dim]
+
+          # Concatenamos en la última dimensión: [X, C_time, C_static_rep]
+          X_full = torch.cat([self.X, self.C_time_mb, C_static_rep], dim=2)
+      else:
+          # Modo no condicional
+          X_full = self.X
+
+      # Pasamos el input completo al encoder
+      self.H = self.nete(X_full)
+
 
     def forward_g(self):
+
+      # Z: ruido [B, T, z_dim]
       self.Z = torch.tensor(self.Z, dtype=torch.float32).to(self.device)
-      self.E_hat = self.netg(self.Z)
+
+      if self.conditional:
+          B, T, _ = self.Z.shape
+
+          # 🔹 C_time_mb ya es [B, T, c_time_dim] desde sample_batch
+          # 🔹 C_static_mb es [B, c_static_dim] → la expandimos en el tiempo
+          C_static_exp = self.C_static_mb.unsqueeze(1).repeat(1, T, 1)  # [B, T, c_static_dim]
+
+          # Pasamos TODO al Generator
+          self.E_hat = self.netg(self.Z, self.C_time_mb, C_static_exp)
+      else:
+          self.E_hat = self.netg(self.Z)
+
+
+
 
     def forward_dg(self):
       self.Y_fake = self.netd(self.H_hat)
@@ -368,10 +473,17 @@ class TimeGAN(BaseModel):
     # -----------------------
     # Backward helpers (same as original)
     # -----------------------
-    def backward_er(self):
-      self.err_er = self.l_mse(self.X_tilde, self.X)
-      self.err_er.backward(retain_graph=True)
-      #print("Loss: ", self.err_er)
+    def forward_er(self):
+      if self.conditional:
+        B, T, _ = self.X.shape
+        C_static_rep = self.C_static_mb.repeat(1, T, 1)
+        X_full = torch.cat([self.X, self.C_time_mb, C_static_rep], dim=2)
+      else:
+        X_full = self.X
+
+      self.H = self.nete(X_full)
+      self.X_tilde = self.netr(self.H)
+
 
     def backward_er_(self):
       self.err_er_ = self.l_mse(self.X_tilde, self.X)

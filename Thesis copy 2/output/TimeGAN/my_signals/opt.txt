@@ -1,6 +1,9 @@
 ------------ Options -------------
 batch_size: 128
 beta1: 0.5
+c_static_dim: 2
+c_time_dim: 3
+conditional: False
 data_name: my_signals
 device: gpu
 display: False
@@ -10,6 +13,7 @@ display_server: http://localhost
 gp_lambda: 10.0
 gpu_ids: [0]
 hidden_dim: 96
+input_dim: 4
 isTrain: True
 iteration: 50000
 load_weights: False
@@ -30,5 +34,6 @@ w_es: 0.1
 w_g: 80
 w_gamma: 0.5
 workers: 8
+x_dim: 4
 z_dim: 32
 -------------- End ----------------
