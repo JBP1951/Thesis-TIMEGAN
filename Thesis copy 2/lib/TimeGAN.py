@@ -290,7 +290,8 @@ class BaseModel():
 
 
   def generation(self, num_samples, mean=0.0, std=1.0):
-        
+      import numpy as np 
+      
       if num_samples == 0:
           return None
 
@@ -315,8 +316,7 @@ class BaseModel():
       # ---------------------------------------------------
       if getattr(self.opt, "conditional", False):
 
-          import numpy as np
-
+         
           # Elegimos índices aleatorios de la base real
           idx = np.random.permutation(self.data_num)[:num_samples]
 
