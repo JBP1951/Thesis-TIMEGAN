@@ -47,15 +47,20 @@ class BaseModel():
     if isinstance(ori_data, dict):
         # caso condicional
         self.conditional   = True
+        
         self.X_all         = ori_data["X"]         # lista de [L, 4]
         self.C_time_all    = ori_data["C_time"]    # lista de [L, 3]
         self.C_static_all  = ori_data["C_static"]  # lista de [2]
     else:
         # caso antiguo (no condicional)
         self.conditional   = False
+        
         self.X_all         = ori_data              # lista/array de [L, dim]
         self.C_time_all    = None
         self.C_static_all  = None
+
+    self.opt.conditional = self.conditional
+    self.opt.conditional = True          # ← ESTA ES LA LÍNEA CRÍTICA
 
     # ------------------------------
     # Dimensión de datos a generar (X)
@@ -137,45 +142,51 @@ class BaseModel():
                '%s/netS.pth' % (weight_dir))
 
   def sample_batch(self):
-   
 
+    
+    # ---------------------------------------------------------
+    #   CONDITIONAL TIMEGAN
+    # ---------------------------------------------------------
     if self.opt.conditional:
         X_mb, C_time_mb, C_static_mb, T_mb = batch_generator_conditional(
             self.X_all,
             self.C_time_all,
             self.C_static_all,
-            self.ori_time,
+            self.ori_time,      
             self.opt.batch_size
         )
 
         self.X0 = X_mb
         self.T  = T_mb
 
-        # 🔹 Convertir a tensores
-        self.X            = torch.tensor(X_mb,        dtype=torch.float32).to(self.device)
-        self.C_time_mb    = torch.tensor(C_time_mb,   dtype=torch.float32).to(self.device)   # [B, T, 3]
+        # Garantizar forma [B, 1, 2]
+        if C_static_mb.ndim == 2:         # (B,2)
+            C_static_mb = C_static_mb[:, np.newaxis, :]   # (B,1,2)
 
+        self.X            = torch.tensor(X_mb,        dtype=torch.float32).to(self.device)
+        self.C_time_mb    = torch.tensor(C_time_mb,   dtype=torch.float32).to(self.device)
         self.C_static_mb  = torch.tensor(C_static_mb, dtype=torch.float32).to(self.device)
 
-    # --- FIX CRÍTICO ---
-    if self.C_static_mb.dim() == 1:
-        # Convertir (2,) → (1, 2)
-        self.C_static_mb = self.C_static_mb.unsqueeze(0)
+        return
 
 
-    else:
-        X_mb, T_mb = batch_generator(
-            self.X_all,
-            self.ori_time,
-            self.opt.batch_size
-        )
+    # ---------------------------------------------------------
+    #   NON-CONDITIONAL TIMEGAN
+    # ---------------------------------------------------------
+    X_mb, T_mb = batch_generator(
+        self.X_all,
+        self.ori_time,
+        self.opt.batch_size
+    )
 
-        self.X0 = X_mb
-        self.T  = T_mb
+    self.X0 = X_mb
+    self.T  = T_mb
 
-        self.X            = torch.tensor(X_mb, dtype=torch.float32).to(self.device)
-        self.C_time_mb    = None
-        self.C_static_mb  = None
+    self.X            = torch.tensor(X_mb, dtype=torch.float32).to(self.device)
+    self.C_time_mb    = None
+    self.C_static_mb  = None
+
+
 
 
 
@@ -245,14 +256,14 @@ class BaseModel():
     for it in range(self.opt.iteration):
         er_loss = self.train_one_iter_er()
 
-        if it % self.opt.print_freq == 0:
+        if it % self.opt.print_freq == 0 or it == self.opt.iteration - 1:
             print(f"[ER] Iter {it}/{self.opt.iteration} | ER Loss = {er_loss:.6f}")
 
     print("=== PRETRAINING: Supervisor ===")
     for it in range(self.opt.iteration):
         s_loss = self.train_one_iter_s()
 
-        if it % self.opt.print_freq == 0:
+        if it % self.opt.print_freq == 0 or it == self.opt.iteration - 1:
             print(f"[S] Iter {it}/{self.opt.iteration} | Supervisor Loss = {s_loss:.6f}")
 
     print("=== ADVERSARIAL TRAINING (WGAN-GP) ===")
@@ -265,7 +276,7 @@ class BaseModel():
         # ---- Train Generator ----
         g_loss = self.train_one_iter_g()
 
-        if it % self.opt.print_freq == 0:
+        if it % self.opt.print_freq == 0 or it == self.opt.iteration - 1:
             print("----------------------------------------------")
             print(f"[WGAN] Iter {it}/{self.opt.iteration}")
             print(f"  D Loss = {d_loss:.6f}")
@@ -279,38 +290,73 @@ class BaseModel():
 
 
   def generation(self, num_samples, mean=0.0, std=1.0):
-    """
-    Generate synthetic sequences for fixed-length windows.
-    Assumes ALL sequences have the same length = self.max_seq_len.
-    """
+        
+      if num_samples == 0:
+          return None
 
-    if num_samples == 0:
-        return None
+      T = self.max_seq_len
+      T_mb = [T] * num_samples
 
-    # 1️⃣ Longitud fija para todas las secuencias
-    T_mb = [self.max_seq_len] * num_samples
+      # 1) Ruido Z
+      Z = random_generator(
+          num_samples,
+          self.opt.z_dim,
+          T_mb,
+          self.max_seq_len,
+          mean,
+          std
+      )
+      Z = np.asarray(Z, dtype=np.float32)  # evita el warning molesto
 
-    # 2️⃣ Generar ruido Z
-    Z = random_generator(
-        num_samples,
-        self.opt.z_dim,
-        T_mb,
-        self.max_seq_len,
-        mean,
-        std
-    )
-    Z = torch.tensor(Z, dtype=torch.float32).to(self.device)
+      Z = torch.tensor(Z, dtype=torch.float32).to(self.device)
 
-    # 3️⃣ Forward: Generator → Supervisor → Recovery
-    E_hat = self.netg(Z)
-    H_hat = self.nets(E_hat)
-    X_hat = self.netr(H_hat).cpu().detach().numpy()  # [num_samples, seq_len, features]
+      # ---------------------------------------------------
+      # 2) MODO CONDICIONAL: samplear condiciones reales
+      # ---------------------------------------------------
+      if getattr(self.opt, "conditional", False):
 
-    # 4️⃣ NO RENORMALIZAR AQUÍ
-    # Los datos permanecen en escala [0,1].
-    generated_data = [X_hat[i] for i in range(num_samples)]
+          import numpy as np
 
-    return generated_data
+          # Elegimos índices aleatorios de la base real
+          idx = np.random.permutation(self.data_num)[:num_samples]
+
+          # C_time: [B, T, 3]  (recortamos/ajustamos a T=max_seq_len)
+          C_time_mb = np.asarray(
+              [self.C_time_all[i][:T] for i in idx],
+              dtype=np.float32
+          )  # [B, T, 3]
+
+          # C_static: [B, 2] -> [B, 1, 2] -> [B, T, 2]
+          C_static_mb = np.asarray(
+              [self.C_static_all[i] for i in idx],
+              dtype=np.float32
+          )  # [B, 2]
+
+          if C_static_mb.ndim == 2:
+              C_static_mb = C_static_mb[:, np.newaxis, :]   # [B,1,2]
+
+          C_static_exp = np.repeat(C_static_mb, T, axis=1)  # [B,T,2]
+
+          # Pasar a torch
+          C_time_mb = torch.tensor(C_time_mb, dtype=torch.float32).to(self.device)
+          C_static_exp = torch.tensor(C_static_exp, dtype=torch.float32).to(self.device)
+
+          # Forward condicional
+          E_hat = self.netg(Z, C_time_mb, C_static_exp)
+
+      else:
+          # -----------------------------------------------
+          # 2-bis) MODO NO CONDICIONAL
+          # -----------------------------------------------
+          E_hat = self.netg(Z)
+
+      # 3) Supervisor + Recovery
+      H_hat = self.nets(E_hat)
+      X_hat = self.netr(H_hat).cpu().detach().numpy()  # [B, T, x_dim]
+
+      generated_data = [X_hat[i] for i in range(num_samples)]
+      return generated_data
+
 
 
 
@@ -439,14 +485,20 @@ class TimeGAN(BaseModel):
       if self.conditional:
           B, T, _ = self.Z.shape
 
-          # 🔹 C_time_mb ya es [B, T, c_time_dim] desde sample_batch
-          # 🔹 C_static_mb es [B, c_static_dim] → la expandimos en el tiempo
-          C_static_exp = self.C_static_mb.unsqueeze(1).repeat(1, T, 1)  # [B, T, c_static_dim]
+          # self.C_static_mb viene de sample_batch como [B, 1, c_static_dim]
+          # Queremos [B, T, c_static_dim]
+          if self.C_static_mb.dim() == 2:
+              # caso raro: [B, 2] → lo hacemos [B, 1, 2]
+              C_static_exp = self.C_static_mb.unsqueeze(1).repeat(1, T, 1)
+          else:
+              # caso normal: [B, 1, 2] → [B, T, 2]
+              C_static_exp = self.C_static_mb.repeat(1, T, 1)
 
           # Pasamos TODO al Generator
           self.E_hat = self.netg(self.Z, self.C_time_mb, C_static_exp)
       else:
           self.E_hat = self.netg(self.Z)
+
 
 
 
