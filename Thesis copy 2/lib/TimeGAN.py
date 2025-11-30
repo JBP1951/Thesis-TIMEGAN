@@ -504,8 +504,13 @@ class TimeGAN(BaseModel):
 
 
     def forward_dg(self):
-      self.Y_fake = self.netd(self.H_hat)
-      self.Y_fake_e = self.netd(self.E_hat)
+      if self.conditional:
+          self.Y_fake   = self.netd(self.H_hat, self.C_time_mb, self.C_static_mb)
+          self.Y_fake_e = self.netd(self.E_hat, self.C_time_mb, self.C_static_mb)
+      else:
+          self.Y_fake   = self.netd(self.H_hat)
+          self.Y_fake_e = self.netd(self.E_hat)
+
 
     def forward_rg(self):
       self.X_hat = self.netr(self.H_hat)
@@ -517,9 +522,15 @@ class TimeGAN(BaseModel):
       self.H_hat = self.nets(self.E_hat)
 
     def forward_d(self):
-      self.Y_real = self.netd(self.H)
-      self.Y_fake = self.netd(self.H_hat)
-      self.Y_fake_e = self.netd(self.E_hat)
+      if self.conditional:
+          self.Y_real   = self.netd(self.H,     self.C_time_mb, self.C_static_mb)
+          self.Y_fake   = self.netd(self.H_hat, self.C_time_mb, self.C_static_mb)
+          self.Y_fake_e = self.netd(self.E_hat, self.C_time_mb, self.C_static_mb)
+      else:
+          self.Y_real   = self.netd(self.H)
+          self.Y_fake   = self.netd(self.H_hat)
+          self.Y_fake_e = self.netd(self.E_hat)
+
 
 
     # -----------------------
@@ -605,7 +616,11 @@ class TimeGAN(BaseModel):
       interpolates = alpha * real + (1 - alpha) * fake
       interpolates.requires_grad_(True)
 
-      d_interpolates = self.netd(interpolates)
+      if self.conditional:
+          d_interpolates = self.netd(interpolates, self.C_time_mb, self.C_static_mb)
+      else:
+          d_interpolates = self.netd(interpolates)
+
 
       grad_outputs = torch.ones_like(d_interpolates)
 

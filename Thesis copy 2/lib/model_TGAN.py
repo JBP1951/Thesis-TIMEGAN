@@ -226,49 +226,76 @@ class Supervisor(nn.Module):
 
 
 # -------------------------------
-# ⚖️ 5. Discriminator
+# ⚖️ 5. Discriminator (CONDITIONAL)
 # -------------------------------
 class Discriminator(nn.Module):
     """
-    Critic for WGAN-GP:
-    Input:  H (seq_len, batch, hidden_dim)
-    Output: critic score (seq_len, batch, 1)  -- NO sigmoid
+    Conditional WGAN-GP Critic
+    Input:  H, C_time, C_static
+    Output: critic score (no sigmoid)
     """
     def __init__(self, opt):
         super(Discriminator, self).__init__()
 
-        # GRU encoder for temporal structure
+        self.hidden_dim = opt.hidden_dim
+        self.c_time_dim = opt.c_time_dim
+        self.c_static_dim = opt.c_static_dim
+        self.conditional = opt.conditional
+
+        if self.conditional:
+            d_input_dim = self.hidden_dim + self.c_time_dim + self.c_static_dim
+        else:
+            d_input_dim = self.hidden_dim
+
+        # GRU recibe ahora la concatenación completa
         self.rnn = nn.GRU(
-            input_size=opt.hidden_dim,
-            hidden_size=opt.hidden_dim,
-            num_layers=1, batch_first=True)
+            input_size=d_input_dim,
+            hidden_size=self.hidden_dim,
+            num_layers=1,
+            batch_first=True
+        )
+
         self.dropout = nn.Dropout(0.2)
-        # NEW: LayerNorm after the GRU (recommended in the paper)
-       
+        self.fc_mid  = nn.Linear(self.hidden_dim, self.hidden_dim)
+        self.ln      = nn.LayerNorm(self.hidden_dim)
+        self.fc      = nn.Linear(self.hidden_dim, 1)
 
-        # IMPORTANT: for WGAN-GP we must REMOVE spectral norm and sigmoid.
-        
-        self.fc_mid = nn.Linear(opt.hidden_dim, opt.hidden_dim)
-        self.ln = nn.LayerNorm(opt.hidden_dim)
-        
-
-        self.fc = nn.Linear(opt.hidden_dim, 1)
         self.apply(_weights_init)
 
-    def forward(self, h, sigmoid: bool = False):
+    def forward(self, H, C_time=None, C_static=None):
         """
-        h: [seq_len, batch, hidden_dim]
+        H:        [B, T, hidden_dim]
+        C_time:   [B, T, c_time_dim]
+        C_static: [B, 1, c_static_dim] or [B, T, c_static_dim]
         """
-        with torch.backends.cudnn.flags(enabled=False):
-            d1, _ = self.rnn(h)
-        d1 = self.dropout(d1)
 
-        d1 = self.fc_mid(d1)
-        d1 = self.ln(d1)
+        if self.conditional:
 
-        logits = self.fc(d1)
+            B, T, _ = H.size()
+
+            if C_static is not None:
+                if C_static.dim() == 2:
+                    C_static = C_static.unsqueeze(1).repeat(1, T, 1)
+                elif C_static.dim() == 3 and C_static.size(1) == 1:
+                    C_static = C_static.repeat(1, T, 1)
+                # si ya es [B,T,C], se deja igual
+            else:
+                C_static = torch.zeros(B, T, self.c_static_dim, device=H.device)
+
+            # CONCAT:  [H, C_time, C_static]
+            D_in = torch.cat([H, C_time, C_static], dim=2)
+
+        else:
+            D_in = H
+
+        out, _ = self.rnn(D_in)
+        out = self.dropout(out)
+        out = self.fc_mid(out)
+        out = self.ln(out)
+        logits = self.fc(out)
 
         return logits
+
         
     ''' self.fc = nn.Linear(opt.hidden_dim, 1)  # <- corregido para probabilidad
         self.sigmoid = nn.Sigmoid()
