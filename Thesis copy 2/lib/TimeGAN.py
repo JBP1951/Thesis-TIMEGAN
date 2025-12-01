@@ -148,26 +148,65 @@ class BaseModel():
     #   CONDITIONAL TIMEGAN
     # ---------------------------------------------------------
     if self.opt.conditional:
-        X_mb, C_time_mb, C_static_mb, T_mb = batch_generator_conditional(
-            self.X_all,
-            self.C_time_all,
-            self.C_static_all,
-            self.ori_time,      
-            self.opt.batch_size
-        )
+      X_mb, C_time_mb, C_static_mb, T_mb = batch_generator_conditional(
+          self.X_all,
+          self.C_time_all,
+          self.C_static_all,
+          self.ori_time,
+          self.opt.batch_size
+      )
 
-        self.X0 = X_mb
-        self.T  = T_mb
+      # Guardamos batch para debug
+      self.X0 = X_mb
+      self.T  = T_mb
 
-        # Garantizar forma [B, 1, 2]
-        if C_static_mb.ndim == 2:         # (B,2)
-            C_static_mb = C_static_mb[:, np.newaxis, :]   # (B,1,2)
+      B = X_mb.shape[0]
+      T = X_mb.shape[1]
 
-        self.X            = torch.tensor(X_mb,        dtype=torch.float32).to(self.device)
-        self.C_time_mb    = torch.tensor(C_time_mb,   dtype=torch.float32).to(self.device)
-        self.C_static_mb  = torch.tensor(C_static_mb, dtype=torch.float32).to(self.device)
+      # ---------------------------------------------------------
+      # 1) FORMA DE C_time_mb  → debe ser [B, T, c_time_dim]
+      # ---------------------------------------------------------
+      C_time_mb = np.asarray(C_time_mb)
 
-        return
+      # Caso típico (bien): [B, T, c_time_dim]
+      if C_time_mb.ndim == 3:
+          pass
+      # Si viene como [B, c_time_dim] → repetimos a lo largo del tiempo
+      elif C_time_mb.ndim == 2:
+          C_time_mb = np.repeat(C_time_mb[:, np.newaxis, :], T, axis=1)
+      else:
+          raise ValueError(f"[ERROR] C_time_mb con forma incorrecta: {C_time_mb.shape}")
+
+      # ---------------------------------------------------------
+      # 2) FORMA DE C_static_mb  → debe ser [B, 1, c_static_dim]
+      # ---------------------------------------------------------
+      C_static_mb = np.asarray(C_static_mb)
+
+      if C_static_mb.ndim == 1:
+          # caso raro: [2] → convertir a [B, 1, 2]
+          C_static_mb = np.tile(C_static_mb, (B, 1))
+          C_static_mb = C_static_mb[:, np.newaxis, :]
+
+      elif C_static_mb.ndim == 2:
+          # caso normal: [B, 2] → [B, 1, 2]
+          C_static_mb = C_static_mb[:, np.newaxis, :]
+
+      elif C_static_mb.ndim == 3:
+          # [B,1,2] → correcto
+          pass
+
+      else:
+          raise ValueError(f"[ERROR] C_static_mb con forma incorrecta: {C_static_mb.shape}")
+
+      # ---------------------------------------------------------
+      # Convertimos a tensores (AHORA sí sin problemas)
+      # ---------------------------------------------------------
+      self.X            = torch.tensor(X_mb,        dtype=torch.float32).to(self.device)
+      self.C_time_mb    = torch.tensor(C_time_mb,   dtype=torch.float32).to(self.device)
+      self.C_static_mb  = torch.tensor(C_static_mb, dtype=torch.float32).to(self.device)
+
+    return
+
 
 
     # ---------------------------------------------------------
