@@ -82,13 +82,15 @@ class Encoder(nn.Module):
 
     def forward(self, x, sigmoid=True):
         # First GRU
-        h1, _ = self.rnn1(x)
+        with torch.backends.cudnn.flags(enabled=False):
+            h1, _ = self.rnn1(x)
 
         # Dropout
         h1 = self.dropout(h1)
 
         # Second GRU
-        h2, _ = self.rnn2(h1)
+        with torch.backends.cudnn.flags(enabled=False):
+            h2, _ = self.rnn2(h1)
 
         # Dense
         H = self.fc(h2)
@@ -138,10 +140,12 @@ class Recovery(nn.Module):
         self.apply(_weights_init)
 
     def forward(self, h, sigmoid=True):
-        h1, _ = self.rnn1(h)
+        with torch.backends.cudnn.flags(enabled=False):
+            h1, _ = self.rnn1(h)
         h1 = self.dropout(h1)
 
-        h2, _ = self.rnn2(h1)
+        with torch.backends.cudnn.flags(enabled=False):
+            h2, _ = self.rnn2(h1)
 
         h2 = self.fc_mid(h2)
         h2 = self.ln(h2)
@@ -152,6 +156,7 @@ class Recovery(nn.Module):
             X_tilde = self.sigmoid(X_tilde)
 
         return X_tilde
+
 
 
 # -------------------------------
@@ -187,15 +192,17 @@ class Generator(nn.Module):
         c_static: [batch, seq, c_static_dim]  (YA repetido en el tiempo)
         """
         if (c_time is not None) and (c_static is not None):
-            # Aquí c_static YA viene con dimensión temporal
             z_full = torch.cat([z, c_time, c_static], dim=2)
         else:
             z_full = z
 
-        g_outputs, _ = self.rnn(z_full)
+        with torch.backends.cudnn.flags(enabled=False):
+            g_outputs, _ = self.rnn(z_full)
+
         g_outputs = self.dropout(g_outputs)
         E = self.fc(g_outputs)
         return E
+
 
 
 
@@ -218,11 +225,12 @@ class Supervisor(nn.Module):
         self.apply(_weights_init)
 
     def forward(self, h, sigmoid=True):
-        s_outputs, _ = self.rnn(h)
-        s_outputs = self.dropout(s_outputs)           # NEW
+        with torch.backends.cudnn.flags(enabled=False):
+            s_outputs, _ = self.rnn(h)
+        s_outputs = self.dropout(s_outputs)
         S = self.fc(s_outputs)
-        
         return S
+
 
 
 # -------------------------------
@@ -288,7 +296,11 @@ class Discriminator(nn.Module):
         else:
             D_in = H
 
-        out, _ = self.rnn(D_in)
+        # 🔥 FIX: disable CuDNN to allow double backward for WGAN-GP
+        with torch.backends.cudnn.flags(enabled=False):
+            out, _ = self.rnn(D_in)
+
+        
         out = self.dropout(out)
         out = self.fc_mid(out)
         out = self.ln(out)
