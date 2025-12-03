@@ -706,6 +706,9 @@ class TimeGAN(BaseModel):
 
       self.err_d.backward(retain_graph=True)
 
+      # 🔥 GRADIENT CLIPPING — ESTE ES EL CAMBIO NUEVO
+      torch.nn.utils.clip_grad_norm_(self.netd.parameters(), 5.0)
+
 
 
       '''
