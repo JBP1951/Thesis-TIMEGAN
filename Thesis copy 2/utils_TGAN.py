@@ -76,7 +76,7 @@ def extract_time(data):
     return time, max_seq_len
 
 
-def random_generator(batch_size, z_dim, T_mb, max_seq_len, mean=0.0, std=1.0):
+def random_generator(batch_size, z_dim, T_mb, max_seq_len, mean=0.0, std=2.0):
     """
     Generate random latent sequences for the Generator.
 
