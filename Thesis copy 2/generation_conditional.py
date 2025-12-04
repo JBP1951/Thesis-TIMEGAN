@@ -38,14 +38,23 @@ def generate_from_condition(model, c_time, c_static):
     c_static_np = np.asarray(c_static, dtype=np.float32).reshape(1, 1, -1)
     C_static_t  = torch.tensor(c_static_np, dtype=torch.float32).to(device)
     C_static_exp = C_static_t.repeat(1, T, 1)
-
     # -----------------------------
-    # 3) Forward pass: G → S → R
+    # 3) Create condition embedding
     # -----------------------------
     with torch.no_grad():
-        E_hat = model.netg(Z, C_time_t, C_static_exp)   # latent space
-        H_hat = model.nets(E_hat)                       # supervised step
-        X_hat = model.netr(H_hat)                       # accelerometers
+
+        # Compute condition embedding
+        C_embed = model.cond_emb(C_time_t, C_static_exp)   # → [1, T, hidden_dim]
+
+        # Pass Z + embedding to generator
+        E_hat = model.netg(Z, C_embed)                     # latent space
+
+        # Supervisor
+        H_hat = model.nets(E_hat)
+
+        # Recovery → synthetic accelerometers
+        X_hat = model.netr(H_hat)
+
 
     return X_hat.cpu().numpy()[0]  # [T,4]
 
