@@ -23,7 +23,9 @@ from lib.data_preprocess import batch_generator, batch_generator_conditional
 from utils_TGAN import extract_time, random_generator, NormMinMax
 
 # Import the adapted model (model_TGAN.py)
-from lib.model_TGAN import Encoder, Recovery, Generator, Discriminator, Supervisor
+from lib.model_TGAN import Encoder, Recovery, Generator, Discriminator, Supervisor,CondEmbedding
+
+
 
 
 class BaseModel():
@@ -60,7 +62,7 @@ class BaseModel():
         self.C_static_all  = None
 
     self.opt.conditional = self.conditional
-    self.opt.conditional = True          # ← ESTA ES LA LÍNEA CRÍTICA
+    #self.opt.conditional = True          # ← ESTA ES LA LÍNEA CRÍTICA
 
     # ------------------------------
     # Dimensión de datos a generar (X)
@@ -205,25 +207,25 @@ class BaseModel():
       self.C_time_mb    = torch.tensor(C_time_mb,   dtype=torch.float32).to(self.device)
       self.C_static_mb  = torch.tensor(C_static_mb, dtype=torch.float32).to(self.device)
 
-    return
+    #return
 
-
+    else:
 
     # ---------------------------------------------------------
     #   NON-CONDITIONAL TIMEGAN
     # ---------------------------------------------------------
-    X_mb, T_mb = batch_generator(
-        self.X_all,
-        self.ori_time,
-        self.opt.batch_size
-    )
+      X_mb, T_mb = batch_generator(
+          self.X_all,
+          self.ori_time,
+          self.opt.batch_size
+      )
 
-    self.X0 = X_mb
-    self.T  = T_mb
+      self.X0 = X_mb
+      self.T  = T_mb
 
-    self.X            = torch.tensor(X_mb, dtype=torch.float32).to(self.device)
-    self.C_time_mb    = None
-    self.C_static_mb  = None
+      self.X            = torch.tensor(X_mb, dtype=torch.float32).to(self.device)
+      self.C_time_mb    = None
+      self.C_static_mb  = None
 
 
 
@@ -380,8 +382,12 @@ class BaseModel():
           C_time_mb = torch.tensor(C_time_mb, dtype=torch.float32).to(self.device)
           C_static_exp = torch.tensor(C_static_exp, dtype=torch.float32).to(self.device)
 
-          # Forward condicional
-          E_hat = self.netg(Z, C_time_mb, C_static_exp)
+          # 1) Crear embedding de condiciones
+          C_embed = self.cond_emb(C_time_mb, C_static_exp)
+
+          # 2) Pasar Z + C_embed al generador
+          E_hat = self.netg(Z, C_embed)
+
 
       else:
           # -----------------------------------------------
@@ -417,7 +423,12 @@ class TimeGAN(BaseModel):
         # BASEMODEL RECIBE TODO
       super(TimeGAN, self).__init__(opt, data_dict)
       # Ahora que BaseModel ya extrajo las dims reales, recalculamos input_dim
-      self.opt.input_dim = self.opt.x_dim + self.opt.c_time_dim + self.opt.c_static_dim
+      if self.conditional:
+          # Encoder recibe [X, C_embed] → x_dim + hidden_dim
+          self.opt.input_dim = self.opt.x_dim + self.opt.hidden_dim
+      else:
+          # Encoder recibe solo X → x_dim
+          self.opt.input_dim = self.opt.x_dim
 
 
 
@@ -429,6 +440,14 @@ class TimeGAN(BaseModel):
       self.netg = Generator(opt).to(self.device)
       self.netd = Discriminator(opt).to(self.device)
       self.nets = Supervisor(opt).to(self.device)
+
+      # 🔥 NEW CONDITION EMBEDDING NETWORK
+      self.cond_emb = CondEmbedding(
+          opt.c_time_dim,
+          opt.c_static_dim,
+          opt.hidden_dim
+      ).to(self.device)
+
 
       # Optionally load pre-trained models (kept same)
       if getattr(self.opt, "resume", '') != '':
@@ -499,42 +518,36 @@ class TimeGAN(BaseModel):
     # -----------------------
     
     def forward_e(self):
-     
 
-      if getattr(self.opt, "conditional", False) and (self.C_time_mb is not None):
-          # Repetimos la condicional estática a lo largo de todos los pasos de tiempo
-          B, T, _ = self.X.shape
-          C_static_rep = self.C_static_mb.repeat(1, T, 1)  # [B, T, c_static_dim]
+      if self.conditional:
 
-          # Concatenamos en la última dimensión: [X, C_time, C_static_rep]
-          X_full = torch.cat([self.X, self.C_time_mb, C_static_rep], dim=2)
+          # 🔥 1) Obtener embedding no lineal de condiciones
+          C_embed = self.cond_emb(self.C_time_mb, self.C_static_mb)  
+          # C_embed → [B, T, hidden_dim]
+
+          # 🔥 2) Concatenar X solo con el embed, no con condiciones crudas
+          X_full = torch.cat([self.X, C_embed], dim=2)
+
       else:
-          # Modo no condicional
           X_full = self.X
 
-      # Pasamos el input completo al encoder
+      # 🔥 3) Encoder procesa X + EMBEDDING
       self.H = self.nete(X_full)
+
 
 
     def forward_g(self):
 
-      # Z: ruido [B, T, z_dim]
       self.Z = torch.tensor(self.Z, dtype=torch.float32).to(self.device)
 
       if self.conditional:
-          B, T, _ = self.Z.shape
 
-          # self.C_static_mb viene de sample_batch como [B, 1, c_static_dim]
-          # Queremos [B, T, c_static_dim]
-          if self.C_static_mb.dim() == 2:
-              # caso raro: [B, 2] → lo hacemos [B, 1, 2]
-              C_static_exp = self.C_static_mb.unsqueeze(1).repeat(1, T, 1)
-          else:
-              # caso normal: [B, 1, 2] → [B, T, 2]
-              C_static_exp = self.C_static_mb.repeat(1, T, 1)
+          # 🔥 Embedding de condiciones
+          C_embed = self.cond_emb(self.C_time_mb, self.C_static_mb)
 
-          # Pasamos TODO al Generator
-          self.E_hat = self.netg(self.Z, self.C_time_mb, C_static_exp)
+          # 🔥 El generador recibe ruido + embedding
+          self.E_hat = self.netg(self.Z, C_embed)
+
       else:
           self.E_hat = self.netg(self.Z)
 
@@ -542,13 +555,19 @@ class TimeGAN(BaseModel):
 
 
 
+
     def forward_dg(self):
+
       if self.conditional:
-          self.Y_fake   = self.netd(self.H_hat, self.C_time_mb, self.C_static_mb)
-          self.Y_fake_e = self.netd(self.E_hat, self.C_time_mb, self.C_static_mb)
+          C_embed = self.cond_emb(self.C_time_mb, self.C_static_mb)
+
+          self.Y_fake   = self.netd(self.H_hat, C_embed)
+          self.Y_fake_e = self.netd(self.E_hat, C_embed)
+
       else:
           self.Y_fake   = self.netd(self.H_hat)
           self.Y_fake_e = self.netd(self.E_hat)
+
 
 
     def forward_rg(self):
@@ -561,10 +580,16 @@ class TimeGAN(BaseModel):
       self.H_hat = self.nets(self.E_hat)
 
     def forward_d(self):
+
       if self.conditional:
-          self.Y_real   = self.netd(self.H,     self.C_time_mb, self.C_static_mb)
-          self.Y_fake   = self.netd(self.H_hat, self.C_time_mb, self.C_static_mb)
-          self.Y_fake_e = self.netd(self.E_hat, self.C_time_mb, self.C_static_mb)
+
+          # 🔥 Embedding para pasar al discriminador
+          C_embed = self.cond_emb(self.C_time_mb, self.C_static_mb)
+
+          self.Y_real   = self.netd(self.H,     C_embed)
+          self.Y_fake   = self.netd(self.H_hat, C_embed)
+          self.Y_fake_e = self.netd(self.E_hat, C_embed)
+
       else:
           self.Y_real   = self.netd(self.H)
           self.Y_fake   = self.netd(self.H_hat)
@@ -577,9 +602,10 @@ class TimeGAN(BaseModel):
     # -----------------------
     def forward_er(self):
       if self.conditional:
-        B, T, _ = self.X.shape
-        C_static_rep = self.C_static_mb.repeat(1, T, 1)
-        X_full = torch.cat([self.X, self.C_time_mb, C_static_rep], dim=2)
+        #B, T, _ = self.X.shape
+        #C_static_rep = self.C_static_mb.repeat(1, T, 1)
+        C_embed = self.cond_emb(self.C_time_mb, self.C_static_mb)
+        X_full = torch.cat([self.X, C_embed], dim=2)
       else:
         X_full = self.X
 
@@ -656,7 +682,8 @@ class TimeGAN(BaseModel):
       interpolates.requires_grad_(True)
 
       if self.conditional:
-          d_interpolates = self.netd(interpolates, self.C_time_mb, self.C_static_mb)
+          C_embed = self.cond_emb(self.C_time_mb, self.C_static_mb)
+          d_interpolates = self.netd(interpolates, C_embed)
       else:
           d_interpolates = self.netd(interpolates)
 

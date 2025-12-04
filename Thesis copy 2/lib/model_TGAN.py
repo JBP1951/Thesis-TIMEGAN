@@ -46,6 +46,39 @@ def _weights_init(m):
                 param.data.fill_(0)
 
 
+# ============================================
+# 🔥 CONDITION EMBEDDING NETWORK
+# ============================================
+class CondEmbedding(nn.Module):
+    def __init__(self, c_time_dim, c_static_dim, hidden_dim):
+        super().__init__()
+        
+        input_dim = c_time_dim + c_static_dim
+
+        self.net = nn.Sequential(
+            nn.Linear(input_dim, hidden_dim),
+            nn.ReLU(),
+            nn.Linear(hidden_dim, hidden_dim)
+        )
+
+    def forward(self, C_time, C_static):
+        """
+        C_time:   [B, T, c_time_dim]
+        C_static: [B, 1, c_static_dim] or [B, T, c_static_dim]
+        Returns:
+            C_embed: [B, T, hidden_dim]
+        """
+        B, T, _ = C_time.size()
+
+        # Expand static conditions along time
+        if C_static.size(1) == 1:
+            C_static = C_static.repeat(1, T, 1)
+
+        cond = torch.cat([C_time, C_static], dim=2)  # [B, T, c_time_dim + c_static_dim]
+
+        return self.net(cond)  # [B, T, hidden_dim]
+
+
 # -------------------------------
 # 1. Encoder
 # -------------------------------
@@ -82,15 +115,15 @@ class Encoder(nn.Module):
 
     def forward(self, x, sigmoid=True):
         # First GRU
-        with torch.backends.cudnn.flags(enabled=False):
-            h1, _ = self.rnn1(x)
+        #with torch.backends.cudnn.flags(enabled=False):
+        h1, _ = self.rnn1(x)
 
         # Dropout
         h1 = self.dropout(h1)
 
         # Second GRU
-        with torch.backends.cudnn.flags(enabled=False):
-            h2, _ = self.rnn2(h1)
+        #with torch.backends.cudnn.flags(enabled=False):
+        h2, _ = self.rnn2(h1)
 
         # Dense
         H = self.fc(h2)
@@ -140,12 +173,12 @@ class Recovery(nn.Module):
         self.apply(_weights_init)
 
     def forward(self, h, sigmoid=True):
-        with torch.backends.cudnn.flags(enabled=False):
-            h1, _ = self.rnn1(h)
+        #with torch.backends.cudnn.flags(enabled=False):
+        h1, _ = self.rnn1(h)
         h1 = self.dropout(h1)
 
-        with torch.backends.cudnn.flags(enabled=False):
-            h2, _ = self.rnn2(h1)
+        #with torch.backends.cudnn.flags(enabled=False):
+        h2, _ = self.rnn2(h1)
 
         h2 = self.fc_mid(h2)
         h2 = self.ln(h2)
@@ -172,7 +205,7 @@ class Generator(nn.Module):
         super(Generator, self).__init__()
         
         self.rnn = nn.GRU(
-            input_size=opt.z_dim + opt.c_time_dim + opt.c_static_dim,
+            input_size = opt.z_dim + opt.hidden_dim,
             hidden_size=opt.hidden_dim,
             num_layers=1,
             batch_first=True
@@ -185,23 +218,23 @@ class Generator(nn.Module):
         self.sigmoid = nn.Sigmoid()
         self.apply(_weights_init)
 
-    def forward(self, z, c_time=None, c_static=None):
-        """
-        z:        [batch, seq, z_dim]
-        c_time:   [batch, seq, c_time_dim]
-        c_static: [batch, seq, c_static_dim]  (YA repetido en el tiempo)
-        """
-        if (c_time is not None) and (c_static is not None):
-            z_full = torch.cat([z, c_time, c_static], dim=2)
-        else:
-            z_full = z
+    def forward(self, Z, C_embed=None):
+        if C_embed is None:
+            raise ValueError("Generator: C_embed es obligatorio en TimeGAN condicional.")
 
-        with torch.backends.cudnn.flags(enabled=False):
-            g_outputs, _ = self.rnn(z_full)
+        """
+        Z:       [B, T, z_dim]
+        C_embed: [B, T, hidden_dim]
+        """
+        z_full = torch.cat([Z, C_embed], dim=2)
+
+        #with torch.backends.cudnn.flags(enabled=False):
+        g_outputs, _ = self.rnn(z_full)
 
         g_outputs = self.dropout(g_outputs)
         E = self.fc(g_outputs)
         return E
+
 
 
 
@@ -225,8 +258,8 @@ class Supervisor(nn.Module):
         self.apply(_weights_init)
 
     def forward(self, h, sigmoid=True):
-        with torch.backends.cudnn.flags(enabled=False):
-            s_outputs, _ = self.rnn(h)
+        #with torch.backends.cudnn.flags(enabled=False):
+        s_outputs, _ = self.rnn(h)
         s_outputs = self.dropout(s_outputs)
         S = self.fc(s_outputs)
         return S
@@ -251,7 +284,8 @@ class Discriminator(nn.Module):
         self.conditional = opt.conditional
 
         if self.conditional:
-            d_input_dim = self.hidden_dim + self.c_time_dim + self.c_static_dim
+            d_input_dim = self.hidden_dim + self.hidden_dim
+
         else:
             d_input_dim = self.hidden_dim
 
@@ -270,7 +304,8 @@ class Discriminator(nn.Module):
 
         self.apply(_weights_init)
 
-    def forward(self, H, C_time=None, C_static=None):
+    def forward(self, H, C_embed=None):
+
         """
         H:        [B, T, hidden_dim]
         C_time:   [B, T, c_time_dim]
@@ -278,23 +313,11 @@ class Discriminator(nn.Module):
         """
 
         if self.conditional:
-
-            B, T, _ = H.size()
-
-            if C_static is not None:
-                if C_static.dim() == 2:
-                    C_static = C_static.unsqueeze(1).repeat(1, T, 1)
-                elif C_static.dim() == 3 and C_static.size(1) == 1:
-                    C_static = C_static.repeat(1, T, 1)
-                # si ya es [B,T,C], se deja igual
-            else:
-                C_static = torch.zeros(B, T, self.c_static_dim, device=H.device)
-
-            # CONCAT:  [H, C_time, C_static]
-            D_in = torch.cat([H, C_time, C_static], dim=2)
-
+            # C_embed ya viene con shape [B, T, hidden_dim]
+            D_in = torch.cat([H, C_embed], dim=2)
         else:
             D_in = H
+
 
         # 🔥 FIX: disable CuDNN to allow double backward for WGAN-GP
         with torch.backends.cudnn.flags(enabled=False):
