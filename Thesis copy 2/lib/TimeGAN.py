@@ -279,6 +279,8 @@ class BaseModel():
 
 
   def train_one_iter_d(self):
+    # 🔥 CLEAN GPU MEMORY EACH CRITIC STEP
+    torch.cuda.empty_cache()
     """ Train discriminator """
     self.netd.train()
 
