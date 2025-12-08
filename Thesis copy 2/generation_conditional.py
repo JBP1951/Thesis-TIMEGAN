@@ -69,3 +69,44 @@ def generate_batch_from_conditions(model, C_time_list, C_static_list, idx_list):
         x_syn = generate_from_condition(model, C_time_list[i], C_static_list[i])
         synthetic.append(x_syn.astype(np.float32))
     return synthetic
+
+import numpy as np
+import torch
+
+def fast_generate_batch(model, C_time_list, C_static_list, idx_list, batch_size=64):
+    """
+    Efficient batch generation for conditional TimeGAN.
+    Does NOT modify your original .py code.
+    """
+    device = model.device
+    T = C_time_list[0].shape[0]
+    synthetic = []
+
+    for start in range(0, len(idx_list), batch_size):
+        end = start + batch_size
+        batch_idx = idx_list[start:end]
+
+        # 1) Noise batch
+        Z = np.random.normal(0, 1, size=(len(batch_idx), T, model.opt.z_dim))
+        Z = torch.tensor(Z, dtype=torch.float32).to(device)
+
+        # 2) C_time batch
+        C_time_batch = np.array([C_time_list[i] for i in batch_idx])
+        C_time_batch = torch.tensor(C_time_batch, dtype=torch.float32).to(device)
+
+        # 3) C_static batch
+        C_static_batch = np.array([C_static_list[i] for i in batch_idx])[:, None, :]
+        C_static_batch = np.repeat(C_static_batch, T, axis=1)
+        C_static_batch = torch.tensor(C_static_batch, dtype=torch.float32).to(device)
+
+        # 4) Forward pass
+        with torch.no_grad():
+            C_embed = model.cond_emb(C_time_batch, C_static_batch)
+            E_hat = model.netg(Z, C_embed)
+            H_hat = model.nets(E_hat)
+            X_hat = model.netr(H_hat)
+
+        # Append
+        for seq in X_hat.cpu().numpy():
+            synthetic.append(seq.astype(np.float32))
+
