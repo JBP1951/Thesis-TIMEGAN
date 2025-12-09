@@ -432,7 +432,8 @@ class TimeGAN(BaseModel):
           # Encoder recibe solo X → x_dim
           self.opt.input_dim = self.opt.x_dim
 
-
+      # 🔥 enable instance noise
+     
 
         # Crear redes como siempre
       self.epoch = 0
@@ -442,6 +443,10 @@ class TimeGAN(BaseModel):
       self.netg = Generator(opt).to(self.device)
       self.netd = Discriminator(opt).to(self.device)
       self.nets = Supervisor(opt).to(self.device)
+
+      self.instance_noise = True
+      self.netd.instance_noise = True
+
 
       # 🔥 NEW CONDITION EMBEDDING NETWORK
       self.cond_emb = CondEmbedding(
@@ -651,6 +656,9 @@ class TimeGAN(BaseModel):
                   + torch.sqrt(self.err_s)
 
       self.err_g.backward(retain_graph=True)
+      # 🔥 Clip generator gradients to avoid instability
+      torch.nn.utils.clip_grad_norm_(self.netg.parameters(), max_norm=1.0)
+
       #print("Loss G (total): ", self.err_g)
 
       '''
@@ -733,10 +741,11 @@ class TimeGAN(BaseModel):
 
       self.err_d = loss_real + loss_fake + self.opt.w_gamma * loss_fake_e + self.opt.gp_lambda * gp
 
+      # Backprop
       self.err_d.backward(retain_graph=True)
 
-      # 🔥 GRADIENT CLIPPING — ESTE ES EL CAMBIO NUEVO
-      torch.nn.utils.clip_grad_norm_(self.netd.parameters(), 5.0)
+      # 🔥 Strong gradient clipping to prevent critic explosion
+      torch.nn.utils.clip_grad_norm_(self.netd.parameters(), max_norm=1.0)
 
 
 

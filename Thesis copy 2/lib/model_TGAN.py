@@ -312,6 +312,16 @@ class Discriminator(nn.Module):
         C_static: [B, 1, c_static_dim] or [B, T, c_static_dim]
         """
 
+        # 🔥 OPTIONAL: Instance noise (anti-overfitting)
+        if getattr(self, "instance_noise", False):
+            noise_H = torch.randn_like(H) * 0.01
+            H = H + noise_H
+
+            noise_C = torch.randn_like(C_embed) * 0.01 if C_embed is not None else None
+            if noise_C is not None:
+                C_embed = C_embed + noise_C
+
+
         if self.conditional:
             # C_embed ya viene con shape [B, T, hidden_dim]
             D_in = torch.cat([H, C_embed], dim=2)
