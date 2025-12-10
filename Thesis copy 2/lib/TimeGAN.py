@@ -627,16 +627,24 @@ class TimeGAN(BaseModel):
       self.err_er.backward(retain_graph=True)
 
     def backward_g(self):
-      #Here we also reeplace the function
+      """
+      Generator loss with:
+      - WGAN adversarial loss
+      - Mean/Std matching (V1, V2)
+      - NEW: Feature Matching loss (FM)
+      - Supervisor consistency
+      """
 
-       
+      # ----------------------------------------
+      # 1) Adversarial losses
+      # ----------------------------------------
       adv_fake = - self.Y_fake.mean()
       adv_fake_e = - self.Y_fake_e.mean()
       self.err_g_adv = adv_fake + self.opt.w_gamma * adv_fake_e
 
-      # --- Regularizadores estadísticos que ya usabas ---
-      # CUIDADO: X_hat y X pueden tener shape [seq, batch, feat] o [batch, seq, feat].
-      # Tus líneas actuales asumen índice [0] y [1] como (stat, time?) → no las toco para mantener compatibilidad.
+      # ----------------------------------------
+      # 2) V1 / V2 (mean and std matching)
+      # ----------------------------------------
       real_std = torch.std(self.X, dim=[0,1])
       fake_std = torch.std(self.X_hat, dim=[0,1])
       self.err_g_V1 = torch.mean(torch.abs(real_std - fake_std))
@@ -645,19 +653,36 @@ class TimeGAN(BaseModel):
       fake_mean = torch.mean(self.X_hat, dim=[0,1])
       self.err_g_V2 = torch.mean(torch.abs(real_mean - fake_mean))
 
+      # ----------------------------------------
+      # 3) NEW: Feature Matching Loss
+      #    Compare latent real H vs generated H_hat
+      # ----------------------------------------
+      H_real_mean = self.H.mean(dim=[0,1])
+      H_fake_mean = self.H_hat.mean(dim=[0,1])
+      self.err_g_FM = torch.mean(torch.abs(H_real_mean - H_fake_mean))
 
-      # --- Pérdida de supervisión (igual que antes) ---
+      # ----------------------------------------
+      # 4) Supervisor loss
+      # ----------------------------------------
       self.err_s = self.l_mse(self.H_supervise[:, :-1, :], self.H[:, 1:, :])
 
-      # --- Total del generador (mantenemos tus pesos) ---
-      self.err_g = self.err_g_adv \
-                  + self.err_g_V1 * self.opt.w_g \
-                  + self.err_g_V2 * self.opt.w_g \
-                  + torch.sqrt(self.err_s)
+      # ----------------------------------------
+      # 5) Total Generator Loss
+      # ----------------------------------------
+      self.err_g = (
+            self.err_g_adv
+          + self.err_g_V1 * self.opt.w_g
+          + self.err_g_V2 * self.opt.w_g
+          + self.err_g_FM * self.opt.w_fm      # NEW FEATURE MATCHING WEIGHT
+          + torch.sqrt(self.err_s)
+      )
 
+      # Backprop
       self.err_g.backward(retain_graph=True)
-      # 🔥 Clip generator gradients to avoid instability
+
+      # Clip gradients
       torch.nn.utils.clip_grad_norm_(self.netg.parameters(), max_norm=1.0)
+
 
       #print("Loss G (total): ", self.err_g)
 

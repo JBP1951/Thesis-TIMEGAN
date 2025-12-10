@@ -168,6 +168,8 @@ class Options():
         self.parser.add_argument('--w_es', type=float, default=0.1, help='Encoder loss weight')
         self.parser.add_argument('--w_e0', type=float, default=10, help='Embedding loss weight')
         self.parser.add_argument('--w_g', type=float, default=80, help='Generator loss weight')
+        self.parser.add_argument('--w_fm', type=float, default=2.0,help='Feature Matching weight for generator')
+
 
         # Mark training mode
         self.isTrain = True
