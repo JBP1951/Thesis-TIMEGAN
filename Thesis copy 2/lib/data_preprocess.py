@@ -168,6 +168,13 @@ def load_data(data_type, seq_len, file_list=None, step=1, max_sequences=None):
             if c_time_data.shape[0] != N:
                 raise ValueError(f"Longitudes distintas en señales dinámicas en experimento {i}")
 
+
+             # -------- 3) LEER CONDICIONALES ESTÁTICAS --------
+            # meta['weight'], meta['distance'] deberían ser escalares
+            weight   = float(np.array(meta['weight'][:]).reshape(-1)[0])
+            distance = float(np.array(meta['distance'][:]).reshape(-1)[0])
+            c_static_vec = np.array([weight, distance], dtype=np.float32)  # [2]
+
             # -------- 2) NORMALIZACIÓN CONJUNTA --------
             # -------- 2) NORMALIZACIÓN CONJUNTA (X + C_time + C_static) --------
 
@@ -195,11 +202,7 @@ def load_data(data_type, seq_len, file_list=None, step=1, max_sequences=None):
             c_static_norm  = full_norm[:, 7:]            # [N,2]
 
 
-            # -------- 3) LEER CONDICIONALES ESTÁTICAS --------
-            # meta['weight'], meta['distance'] deberían ser escalares
-            weight   = float(np.array(meta['weight'][:]).reshape(-1)[0])
-            distance = float(np.array(meta['distance'][:]).reshape(-1)[0])
-            c_static_vec = np.array([weight, distance], dtype=np.float32)  # [2]
+           
 
             # -------- 4) CREAR VENTANAS --------
             for j in range(0, N - seq_len, step):
