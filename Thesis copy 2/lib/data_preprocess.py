@@ -169,13 +169,31 @@ def load_data(data_type, seq_len, file_list=None, step=1, max_sequences=None):
                 raise ValueError(f"Longitudes distintas en señales dinámicas en experimento {i}")
 
             # -------- 2) NORMALIZACIÓN CONJUNTA --------
-            full_data = np.concatenate([accel_data, c_time_data], axis=1)  # [N, 7]
+            # -------- 2) NORMALIZACIÓN CONJUNTA (X + C_time + C_static) --------
+
+            # 1) Repetimos C_static para que tenga longitud N (igual que X y C_time)
+            c_static_repeat = np.repeat(
+                np.array(c_static_vec).reshape(1, -1),
+                accel_data.shape[0],
+                axis=0
+            )  # → [N, 2]
+
+            # 2) Concatenamos TODO para normalizar junto
+            full_data = np.concatenate(
+                [accel_data, c_time_data, c_static_repeat],
+                axis=1
+            )  # → [N, 4 + 3 + 2 = 9]
+
             scaler = MinMaxScaler(feature_range=(0, 1))
             full_norm = scaler.fit_transform(full_data)
+
             all_scalers.append(scaler)
 
-            accel_norm  = full_norm[:, :len(accel_names)]           # [N, 4]
-            c_time_norm = full_norm[:, len(accel_names):]           # [N, 3]
+            # 3) Separamos nuevamente las partes normales
+            accel_norm     = full_norm[:, :4]            # [N,4]
+            c_time_norm    = full_norm[:, 4:7]           # [N,3]
+            c_static_norm  = full_norm[:, 7:]            # [N,2]
+
 
             # -------- 3) LEER CONDICIONALES ESTÁTICAS --------
             # meta['weight'], meta['distance'] deberían ser escalares
@@ -191,7 +209,7 @@ def load_data(data_type, seq_len, file_list=None, step=1, max_sequences=None):
 
                 X_list.append(x_win.astype(np.float32))
                 C_time_list.append(c_time_win.astype(np.float32))
-                C_static_list.append(c_static_vec)           # misma cond. para toda la secuencia
+                C_static_list.append(c_static_norm[0])        # misma cond. para toda la secuencia
 
                 if max_sequences and len(X_list) >= max_sequences:
                     break
