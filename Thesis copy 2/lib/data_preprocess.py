@@ -26,6 +26,49 @@ def MinMax_Scaler(data):
     norm_data = scaler.fit_transform(data)
     return norm_data, scaler
 
+
+def fit_global_scalers(mat_path, accel_names, c_time_names):
+    dyn_all = []
+    static_all = []
+
+    with h5py.File(mat_path, "r") as f:
+        data_all = f["data_all"]
+        n_files = data_all.shape[1]
+
+        for i in range(n_files):
+            ref = data_all[0][i]
+            entry = f[ref]
+
+            sig = entry["signals_processed"]
+            meta = entry["meta"]
+
+            # --- dinámicos ---
+            accel = [np.array(sig[n][:]).reshape(-1) for n in accel_names]
+            accel = np.vstack(accel).T
+
+            c_time = [np.array(sig[n][:]).reshape(-1) for n in c_time_names]
+            c_time = np.vstack(c_time).T
+
+            dyn_all.append(np.concatenate([accel, c_time], axis=1))
+
+            # --- estáticos (proxies físicos) ---
+            weight = float(np.array(meta['weight'][()]).squeeze())
+            distance = float(np.array(meta['distance'][()]).squeeze())
+
+            static_all.append([weight, distance])
+
+    dyn_all = np.vstack(dyn_all)
+    static_all = np.array(static_all)
+
+    scaler_dyn = MinMaxScaler(feature_range=(0, 1))
+    scaler_static = MinMaxScaler(feature_range=(0, 1))
+
+    scaler_dyn.fit(dyn_all)
+    scaler_static.fit(static_all)
+
+    return scaler_dyn, scaler_static
+
+
 # -------------------------------------------------------------
 # (2) Inverse transform
 # -------------------------------------------------------------
@@ -109,7 +152,10 @@ def sine_data_generation(no, seq_len, dim):
 # -------------------------------------------------------------
 
 
-def load_data(data_type, seq_len, file_list=None, step=1, max_sequences=None):
+def load_data(data_type, seq_len, file_list,
+              scaler_dyn, scaler_static,
+              step=1, max_sequences_per_experiment=None,  max_sequences=None):
+
 
     if data_type != "mytests":
         raise NotImplementedError("Only mytests is implemented.")
@@ -121,7 +167,7 @@ def load_data(data_type, seq_len, file_list=None, step=1, max_sequences=None):
     X_list        = []   # acelerómetros
     C_time_list   = []   # rpm, temp, current
     C_static_list = []   # peso, distancia
-    all_scalers   = []   # un scaler por experimento
+    
     feature_names = None
 
     # Nombres de señales
@@ -163,66 +209,63 @@ def load_data(data_type, seq_len, file_list=None, step=1, max_sequences=None):
                 c_time_signals.append(vec)
             c_time_data = np.vstack(c_time_signals).T  # [N, 3]
 
-            # Comprobar misma longitud
+            # Comprobar misma longituds
             N = accel_data.shape[0]
             if c_time_data.shape[0] != N:
                 raise ValueError(f"Longitudes distintas en señales dinámicas en experimento {i}")
 
 
-             # -------- 3) LEER CONDICIONALES ESTÁTICAS --------
+            full_dyn = np.concatenate([accel_data, c_time_data], axis=1)
+            full_dyn_norm = scaler_dyn.transform(full_dyn)
+
+            accel_norm = full_dyn_norm[:, [0]]   # SOLO Accel1
+
+            c_time_norm = full_dyn_norm[:, 4:]
+
+
+            
+# -------- 3) LEER CONDICIONALES ESTÁTICAS --------
             # meta['weight'], meta['distance'] deberían ser escalares
-            weight   = float(np.array(meta['weight'][:]).reshape(-1)[0])
-            distance = float(np.array(meta['distance'][:]).reshape(-1)[0])
-            c_static_vec = np.array([weight, distance], dtype=np.float32)  # [2]
+            weight = float(np.array(meta['weight'][()]).squeeze())
+            distance = float(np.array(meta['distance'][()]).squeeze())
 
-            # -------- 2) NORMALIZACIÓN CONJUNTA --------
-            # -------- 2) NORMALIZACIÓN CONJUNTA (X + C_time + C_static) --------
+            
+            c_static_vec = scaler_static.transform(
+            np.array([[weight, distance]], dtype=np.float32)
+            )[0]
 
-            # 1) Repetimos C_static para que tenga longitud N (igual que X y C_time)
-            c_static_repeat = np.repeat(
-                np.array(c_static_vec).reshape(1, -1),
-                accel_data.shape[0],
-                axis=0
-            )  # → [N, 2]
-
-            # 2) Concatenamos TODO para normalizar junto
-            full_data = np.concatenate(
-                [accel_data, c_time_data, c_static_repeat],
-                axis=1
-            )  # → [N, 4 + 3 + 2 = 9]
-
-            scaler = MinMaxScaler(feature_range=(0, 1))
-            full_norm = scaler.fit_transform(full_data)
-
-            all_scalers.append(scaler)
-
-            # 3) Separamos nuevamente las partes normales
-            accel_norm     = full_norm[:, :4]            # [N,4]
-            c_time_norm    = full_norm[:, 4:7]           # [N,3]
-            c_static_norm  = full_norm[:, 7:]            # [N,2]
-
-
-           
 
             # -------- 4) CREAR VENTANAS --------
+            count_exp = 0   # ← NUEVO: contador por experimento
+
             for j in range(0, N - seq_len, step):
 
-                x_win      = accel_norm[j:j+seq_len, :]      # [seq_len, 4]
-                c_time_win = c_time_norm[j:j+seq_len, :]     # [seq_len, 3]
+                x_win      = accel_norm[j:j+seq_len, :]
+                c_time_win = c_time_norm[j:j+seq_len, :]
 
                 X_list.append(x_win.astype(np.float32))
                 C_time_list.append(c_time_win.astype(np.float32))
-                C_static_list.append(c_static_norm[0])        # misma cond. para toda la secuencia
+                C_static_list.append(c_static_vec)
 
-                if max_sequences and len(X_list) >= max_sequences:
-                    break
+                count_exp += 1
 
-            if max_sequences and len(X_list) >= max_sequences:
+                # 🔹 LÍMITE POR EXPERIMENTO
+                if max_sequences_per_experiment is not None:
+                    if count_exp >= max_sequences_per_experiment:
+                        break
+
+                # 🔹 LÍMITE GLOBAL (opcional)
+                if max_sequences is not None:
+                    if len(X_list) >= max_sequences:
+                        break
+
+            if max_sequences is not None and len(X_list) >= max_sequences:
                 break
 
     print(f"📌 Total sequences: {len(X_list)} | Each: {seq_len}×{X_list[0].shape[1]}")
 
-    return X_list, C_time_list, C_static_list, all_scalers, feature_names
+    return X_list, C_time_list, C_static_list, feature_names
+
 
 
 

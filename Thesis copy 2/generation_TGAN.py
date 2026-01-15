@@ -18,11 +18,11 @@ def safe_generation(model, num_samples, batch_size=64, verbose=True):
     for b in range(n_batches):
         current_n = min(batch_size, num_samples - b * batch_size)
 
-        # FIXED-LENGTH GENERATION  ← ESTE ES EL CAMBIO CLAVE
-        model.T = [model.opt.seq_len] * current_n  
-
+        
         # Generate synthetic mini-batch
         gen_batch = model.generation(num_samples=current_n)
+
+
         generated_all.extend(gen_batch)
 
         if verbose:

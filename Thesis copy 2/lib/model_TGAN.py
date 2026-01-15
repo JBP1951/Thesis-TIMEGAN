@@ -76,7 +76,12 @@ class CondEmbedding(nn.Module):
 
         cond = torch.cat([C_time, C_static], dim=2)  # [B, T, c_time_dim + c_static_dim]
 
-        return self.net(cond)  # [B, T, hidden_dim]
+       #return self.net(cond)  # [B, T, hidden_dim]
+
+        out = self.net(cond)
+        out = torch.tanh(out) #LayerNorm, pero tanh es el mínimo cambio
+        return out
+
 
 
 # -------------------------------
@@ -169,10 +174,10 @@ class Recovery(nn.Module):
         # 🔥 SALIDA EN ESPACIO DE LOS ACELERÓMETROS (x_dim = 4)
         self.fc = nn.Linear(opt.hidden_dim, opt.x_dim)
 
-        self.sigmoid = nn.Sigmoid()
+       
         self.apply(_weights_init)
 
-    def forward(self, h, sigmoid=True):
+    def forward(self, h, sigmoid=False):
         #with torch.backends.cudnn.flags(enabled=False):
         h1, _ = self.rnn1(h)
         h1 = self.dropout(h1)
@@ -184,11 +189,9 @@ class Recovery(nn.Module):
         h2 = self.ln(h2)
 
         X_tilde = self.fc(h2)
-
-        if sigmoid:
-            X_tilde = self.sigmoid(X_tilde)
-
         return X_tilde
+
+
 
 
 
@@ -204,6 +207,10 @@ class Generator(nn.Module):
     def __init__(self, opt):
         super(Generator, self).__init__()
         
+        self.c_scale = nn.Parameter(torch.tensor(0.02))  # empieza MUY bajo
+        self.z_scale = nn.Parameter(torch.tensor(1.0))   # deja a Z dominar al inicio
+
+
         self.rnn = nn.GRU(
             input_size = opt.z_dim + opt.hidden_dim,
             hidden_size=opt.hidden_dim,
@@ -226,7 +233,13 @@ class Generator(nn.Module):
         Z:       [B, T, z_dim]
         C_embed: [B, T, hidden_dim]
         """
-        z_full = torch.cat([Z, C_embed], dim=2)
+        
+
+        # en forward
+        z_full = torch.cat([self.z_scale * Z, self.c_scale * C_embed], dim=2)
+
+
+
 
         #with torch.backends.cudnn.flags(enabled=False):
         g_outputs, _ = self.rnn(z_full)
@@ -251,7 +264,7 @@ class Supervisor(nn.Module):
     def __init__(self, opt):
         super(Supervisor, self).__init__()
         self.rnn = nn.GRU(input_size=opt.hidden_dim, hidden_size=opt.hidden_dim, num_layers=1, batch_first=True)
-        self.dropout = nn.Dropout(0.2)
+        self.dropout = nn.Dropout(0.0)
 
         self.fc = nn.Linear(opt.hidden_dim, opt.hidden_dim)
         self.sigmoid = nn.Sigmoid()

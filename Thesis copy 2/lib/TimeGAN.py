@@ -102,7 +102,7 @@ class BaseModel():
 
     # Device (use GPU if requested and available)
     if getattr(self.opt, "device", "gpu") != 'cpu' and torch.cuda.is_available():
-      self.device = torch.device("cuda:0")
+      self.device = torch.device(f"cuda:{self.opt.gpu_ids[0]}")
     else:
       self.device = torch.device("cpu")
 
@@ -125,6 +125,8 @@ class BaseModel():
     torch.cuda.manual_seed_all(seed_value)
     np.random.seed(seed_value)
     torch.backends.cudnn.deterministic = True
+    torch.backends.cudnn.benchmark = False
+
 
   def save_weights(self, epoch):
     """Save nets' weights for current epoch"""
@@ -142,6 +144,37 @@ class BaseModel():
                '%s/netD.pth' % (weight_dir))
     torch.save({'epoch': epoch + 1, 'state_dict': self.nets.state_dict()},
                '%s/netS.pth' % (weight_dir))
+
+    # Save condition embedding network too (needed for reproducibility)
+    if hasattr(self, "cond_emb") and (self.cond_emb is not None):
+        torch.save({'epoch': epoch + 1, 'state_dict': self.cond_emb.state_dict()},
+                  '%s/cond_emb.pth' % (weight_dir))
+
+
+  def save_checkpoint(self, it):
+    ckpt_dir = os.path.join(self.opt.outf, self.opt.name, "checkpoints")
+    os.makedirs(ckpt_dir, exist_ok=True)
+
+    payload = {
+        "iteration": it,
+        "netE": self.nete.state_dict(),
+        "netR": self.netr.state_dict(),
+        "netG": self.netg.state_dict(),
+        "netS": self.nets.state_dict(),
+        "netD": self.netd.state_dict(),
+    }
+
+    # ✅ Guardar cond_emb solo si existe (evita guardar “incorrecto” o crash)
+    if hasattr(self, "cond_emb") and (self.cond_emb is not None):
+        payload["cond_emb"] = self.cond_emb.state_dict()
+
+    ckpt_path = os.path.join(ckpt_dir, f"ckpt_iter_{it:06d}.pt")
+    torch.save(payload, ckpt_path)
+    print(f"[CHECKPOINT] Saved at iteration {it} -> {ckpt_path}")
+
+
+
+
 
   def sample_batch(self):
 
@@ -170,35 +203,44 @@ class BaseModel():
       # ---------------------------------------------------------
       C_time_mb = np.asarray(C_time_mb)
 
-      # Caso típico (bien): [B, T, c_time_dim]
-      if C_time_mb.ndim == 3:
-          pass
-      # Si viene como [B, c_time_dim] → repetimos a lo largo del tiempo
+      # Garantizar forma [B, T, c_time_dim]
+      if C_time_mb.ndim == 1:
+          # caso extremo: batch_size=1 y NumPy colapsó → [c_time_dim]
+          C_time_mb = C_time_mb.reshape(1, T, -1)
+
       elif C_time_mb.ndim == 2:
-          C_time_mb = np.repeat(C_time_mb[:, np.newaxis, :], T, axis=1)
+          # caso raro: [B, c_time_dim] → expandir en tiempo
+          C_time_mb = C_time_mb[:, None, :].repeat(T, axis=1)
+
+      elif C_time_mb.ndim == 3:
+          # caso correcto → [B, T, c_time_dim]
+          pass
+
       else:
-          raise ValueError(f"[ERROR] C_time_mb con forma incorrecta: {C_time_mb.shape}")
+          raise ValueError(f"C_time_mb shape inválida: {C_time_mb.shape}")
+
 
       # ---------------------------------------------------------
       # 2) FORMA DE C_static_mb  → debe ser [B, 1, c_static_dim]
       # ---------------------------------------------------------
       C_static_mb = np.asarray(C_static_mb)
 
+      # Garantizar forma [B, 1, c_static_dim]
       if C_static_mb.ndim == 1:
-          # caso raro: [2] → convertir a [B, 1, 2]
-          C_static_mb = np.tile(C_static_mb, (B, 1))
-          C_static_mb = C_static_mb[:, np.newaxis, :]
+          # caso batch_size = 1 → [2] → [1,1,2]
+          C_static_mb = C_static_mb.reshape(1, 1, -1)
 
       elif C_static_mb.ndim == 2:
-          # caso normal: [B, 2] → [B, 1, 2]
-          C_static_mb = C_static_mb[:, np.newaxis, :]
+          # caso normal → [B,2] → [B,1,2]
+          C_static_mb = C_static_mb[:, None, :]
 
       elif C_static_mb.ndim == 3:
-          # [B,1,2] → correcto
+          # ya correcto → [B,1,2]
           pass
 
       else:
-          raise ValueError(f"[ERROR] C_static_mb con forma incorrecta: {C_static_mb.shape}")
+          raise ValueError(f"C_static_mb shape inválida: {C_static_mb.shape}")
+
 
       # ---------------------------------------------------------
       # Convertimos a tensores (AHORA sí sin problemas)
@@ -206,6 +248,14 @@ class BaseModel():
       self.X            = torch.tensor(X_mb,        dtype=torch.float32).to(self.device)
       self.C_time_mb    = torch.tensor(C_time_mb,   dtype=torch.float32).to(self.device)
       self.C_static_mb  = torch.tensor(C_static_mb, dtype=torch.float32).to(self.device)
+
+      # ===== DEBUG SHAPES (TEST 2) =====
+      #if np.random.rand() < 0.01:   # imprime solo a veces
+       #   print("\n[DEBUG SHAPES]")
+        #  print("X:", self.X.shape)
+         # print("C_time:", self.C_time_mb.shape)
+          #print("C_static:", self.C_static_mb.shape)
+
 
     #return
 
@@ -226,10 +276,6 @@ class BaseModel():
       self.X            = torch.tensor(X_mb, dtype=torch.float32).to(self.device)
       self.C_time_mb    = None
       self.C_static_mb  = None
-
-
-
-
 
 
 
@@ -267,15 +313,18 @@ class BaseModel():
 
 
   def train_one_iter_g(self):
-    """ Train generator-related parts """
-    self.netg.train()
+      """ Train generator-related parts """
+      self.netg.train()
+      #self.cond_emb.train()   # importante si cond_emb se entrena con G
 
-    self.sample_batch()
+      # NO tocar nete/netr/nets aquí.
 
-    self.Z = random_generator(self.opt.batch_size, self.opt.z_dim, self.T, self.max_seq_len)
-    self.Z = np.asarray(self.Z)  # make sure numpy array
-    g_loss  = self.optimize_params_g()
-    return g_loss
+      self.sample_batch()
+
+      self.Z = random_generator(self.opt.batch_size, self.opt.z_dim, self.T, self.max_seq_len)
+      self.Z = np.asarray(self.Z)
+      g_loss = self.optimize_params_g()
+      return g_loss
 
 
   def train_one_iter_d(self):
@@ -283,7 +332,7 @@ class BaseModel():
     torch.cuda.empty_cache()
     """ Train discriminator """
     self.netd.train()
-
+    
     self.sample_batch()
 
     self.Z = random_generator(self.opt.batch_size, self.opt.z_dim, self.T, self.max_seq_len)
@@ -309,6 +358,41 @@ class BaseModel():
         if it % self.opt.print_freq == 0 or it == self.opt.iteration - 1:
             print(f"[S] Iter {it}/{self.opt.iteration} | Supervisor Loss = {s_loss:.6f}")
 
+    save_every = getattr(self.opt, "save_ckpt_every", 500)
+
+     # =========================================================
+    # 🔒 FREEZE ENCODER, RECOVERY, SUPERVISOR (after pretraining)
+    # =========================================================
+    for p in self.nete.parameters():
+        p.requires_grad = False
+    for p in self.netr.parameters():
+        p.requires_grad = False
+    for p in self.nets.parameters():
+        p.requires_grad = False
+
+
+    # =========================================================
+    # 🔒 FREEZE CONDITION EMBEDDING (FINAL DECISION)
+    # =========================================================
+    for p in self.cond_emb.parameters():
+        p.requires_grad = False
+    self.cond_emb.eval()
+    print("[INFO] Freeze: cond_emb frozen during adversarial")
+
+
+   # Encoder: úsalo como extractor fijo (no necesitas backward) => eval OK
+    self.nete.eval()
+
+    # Supervisor y Recovery: NECESITAS backward a través de ellos para entrenar G
+    # => deben estar en train() por CuDNN
+    self.nets.train()
+    self.netr.train()
+
+    # Y apaga dropout durante adversarial (recomendado)
+    if hasattr(self.nets, "dropout"): self.nets.dropout.p = 0.0
+    if hasattr(self.netr, "dropout"): self.netr.dropout.p = 0.0
+    print("[INFO] Freeze: netE eval (fixed), netS/netR train (dropout off) for CuDNN backward")
+
     print("=== ADVERSARIAL TRAINING (WGAN-GP) ===")
     for it in range(self.opt.iteration):
 
@@ -326,7 +410,13 @@ class BaseModel():
             print(f"  G Loss = {g_loss:.6f}")
             print("----------------------------------------------")
 
+
+        if (it > 0) and (it % save_every == 0):
+         self.save_checkpoint(it)
+
+
     self.save_weights(self.opt.iteration)
+    self.save_checkpoint(self.opt.iteration)
     self.generated_data = self.generation(self.opt.batch_size)
     print("Finish Synthetic Data Generation")
 
@@ -465,7 +555,19 @@ class TimeGAN(BaseModel):
         self.netg.load_state_dict(torch.load(os.path.join(self.opt.resume, 'netG.pth'))['state_dict'])
         self.netd.load_state_dict(torch.load(os.path.join(self.opt.resume, 'netD.pth'))['state_dict'])
         self.nets.load_state_dict(torch.load(os.path.join(self.opt.resume, 'netS.pth'))['state_dict'])
+        # --- NEW: load cond_emb if available ---
+        cond_path = os.path.join(self.opt.resume, 'cond_emb.pth')
+        if os.path.exists(cond_path):
+            self.cond_emb.load_state_dict(torch.load(cond_path)['state_dict'])
+            print("\tLoaded cond_emb.")
+        else:
+            print("\t[WARN] cond_emb.pth not found in resume folder; using random cond_emb.")
+
         print("\tDone.\n")
+
+
+
+
 
       # losses (same as original)
       self.l_mse = nn.MSELoss()
@@ -484,10 +586,12 @@ class TimeGAN(BaseModel):
         lr = getattr(self.opt, "lr", 0.001)
         beta1 = getattr(self.opt, "beta1", 0.9)
 
-                # Encoder + Recovery optimizers
-        self.optimizer_e = optim.Adam(self.nete.parameters(),
-                                      lr=getattr(self.opt, "lr_e", lr),
-                                      betas=(beta1, 0.9))
+        # Encoder + CondEmbedding optimizer (ER pretraining must train cond_emb)
+        self.optimizer_e = optim.Adam(
+            list(self.nete.parameters()) + list(self.cond_emb.parameters()),
+            lr=getattr(self.opt, "lr_e", lr),
+            betas=(beta1, 0.9)
+        )
         self.optimizer_r = optim.Adam(self.netr.parameters(),
                                       lr=getattr(self.opt, "lr_r", lr),
                                       betas=(beta1, 0.9))
@@ -497,26 +601,41 @@ class TimeGAN(BaseModel):
                                       lr=getattr(self.opt, "lr_s", lr),
                                       betas=(beta1, 0.9))
 
-        # Generator optimizer (separate LR)
-        self.optimizer_g = optim.Adam(self.netg.parameters(),
-                                      lr=getattr(self.opt, "lr_g", lr),
-                                      betas=(beta1, 0.9))
+        # Generator optimizer with param groups:
+        # - netG uses lr_g
+        # - cond_emb uses lr_c (smaller to avoid drift)
+        lr_g = getattr(self.opt, "lr_g", lr)
+        lr_c = getattr(self.opt, "lr_c", lr_g * 0.1)  # 10x smaller (si sigue drift, usa 0.02)
+
+        self.optimizer_g = optim.Adam(
+          self.netg.parameters(),
+          lr=lr_g,
+          betas=(beta1, 0.9)
+        )
+
+
 
         # Discriminator optimizer (separate LR)
-        self.optimizer_d = optim.Adam(self.netd.parameters(),
-                                      lr=getattr(self.opt, "lr_d", lr),
-                                      betas=(beta1, 0.9))
+        self.optimizer_d = optim.Adam(
+        self.netd.parameters(),
+        lr=getattr(self.opt, "lr_d", lr),
+        betas=(beta1, 0.9)
+)
+
         
         # -----------------------------
         # Add LR schedulers (CTGAN-MSIN paper)
         # -----------------------------
         from torch.optim.lr_scheduler import StepLR
 
-        self.scheduler_e = StepLR(self.optimizer_e, step_size=100, gamma=0.96)
-        self.scheduler_r = StepLR(self.optimizer_r, step_size=100, gamma=0.96)
-        self.scheduler_s = StepLR(self.optimizer_s, step_size=100, gamma=0.96)
-        self.scheduler_g = StepLR(self.optimizer_g, step_size=100, gamma=0.96)
-        self.scheduler_d = StepLR(self.optimizer_d, step_size=100, gamma=0.96)
+        DECAY_STEPS = 10000  # recomendado
+
+        self.scheduler_e = StepLR(self.optimizer_e, step_size=DECAY_STEPS, gamma=0.96)
+        self.scheduler_r = StepLR(self.optimizer_r, step_size=DECAY_STEPS, gamma=0.96)
+        #self.scheduler_s = StepLR(self.optimizer_s, step_size=DECAY_STEPS, gamma=0.96)
+        self.scheduler_g = StepLR(self.optimizer_g, step_size=DECAY_STEPS, gamma=0.96)
+        self.scheduler_d = StepLR(self.optimizer_d, step_size=DECAY_STEPS, gamma=0.96)
+
 
 
 
@@ -529,7 +648,7 @@ class TimeGAN(BaseModel):
       if self.conditional:
 
           # 🔥 1) Obtener embedding no lineal de condiciones
-          C_embed = self.cond_emb(self.C_time_mb, self.C_static_mb)  
+          C_embed = self.cond_emb(self.C_time_mb, self.C_static_mb)
           # C_embed → [B, T, hidden_dim]
 
           # 🔥 2) Concatenar X solo con el embed, no con condiciones crudas
@@ -560,20 +679,34 @@ class TimeGAN(BaseModel):
 
 
 
-
-
-
-    def forward_dg(self):
+    def forward_dg(self, detach_for_d=False):
 
       if self.conditional:
-          C_embed = self.cond_emb(self.C_time_mb, self.C_static_mb)
+          if detach_for_d:
+              with torch.no_grad():
+                  C_embed = self.cond_emb(self.C_time_mb, self.C_static_mb)
+              H_hat_in = self.H_hat.detach()
+              E_hat_in = self.E_hat.detach()
+          else:
+              C_embed = self.cond_emb(self.C_time_mb, self.C_static_mb)
+              H_hat_in = self.H_hat
+              E_hat_in = self.E_hat
 
-          self.Y_fake   = self.netd(self.H_hat, C_embed)
-          self.Y_fake_e = self.netd(self.E_hat, C_embed)
+          self.Y_fake   = self.netd(H_hat_in, C_embed)
+          self.Y_fake_e = self.netd(E_hat_in, C_embed)
 
       else:
-          self.Y_fake   = self.netd(self.H_hat)
-          self.Y_fake_e = self.netd(self.E_hat)
+          if detach_for_d:
+              H_hat_in = self.H_hat.detach()
+              E_hat_in = self.E_hat.detach()
+          else:
+              H_hat_in = self.H_hat
+              E_hat_in = self.E_hat
+
+          self.Y_fake   = self.netd(H_hat_in)
+          self.Y_fake_e = self.netd(E_hat_in)
+
+
 
 
 
@@ -591,11 +724,13 @@ class TimeGAN(BaseModel):
       if self.conditional:
 
           # 🔥 Embedding para pasar al discriminador
-          C_embed = self.cond_emb(self.C_time_mb, self.C_static_mb)
+          with torch.no_grad():
+            C_embed = self.cond_emb(self.C_time_mb, self.C_static_mb)
 
-          self.Y_real   = self.netd(self.H,     C_embed)
-          self.Y_fake   = self.netd(self.H_hat, C_embed)
-          self.Y_fake_e = self.netd(self.E_hat, C_embed)
+
+          self.Y_real   = self.netd(self.H.detach(),     C_embed)
+          self.Y_fake   = self.netd(self.H_hat.detach(), C_embed)
+          self.Y_fake_e = self.netd(self.E_hat.detach(), C_embed)
 
       else:
           self.Y_real   = self.netd(self.H)
@@ -659,12 +794,23 @@ class TimeGAN(BaseModel):
       # ----------------------------------------
       H_real_mean = self.H.mean(dim=[0,1])
       H_fake_mean = self.H_hat.mean(dim=[0,1])
-      self.err_g_FM = torch.mean(torch.abs(H_real_mean - H_fake_mean))
+      H_real_std = self.H.std(dim=[0,1])
+      H_fake_std = self.H_hat.std(dim=[0,1])
+
+      self.err_g_FM = (
+          torch.mean(torch.abs(H_real_mean - H_fake_mean)) +
+          torch.mean(torch.abs(H_real_std  - H_fake_std))
+      )
+
 
       # ----------------------------------------
       # 4) Supervisor loss
       # ----------------------------------------
-      self.err_s = self.l_mse(self.H_supervise[:, :-1, :], self.H[:, 1:, :])
+      # Supervisor consistency should constrain GENERATED latent dynamics
+      # H_hat = S(E_hat) already computed in forward_sg()
+      self.err_s = self.l_mse(self.H_hat[:, :-1, :], self.E_hat[:, 1:, :])
+
+
 
       # ----------------------------------------
       # 5) Total Generator Loss
@@ -674,7 +820,7 @@ class TimeGAN(BaseModel):
           + self.err_g_V1 * self.opt.w_g
           + self.err_g_V2 * self.opt.w_g
           + self.err_g_FM * self.opt.w_fm      # NEW FEATURE MATCHING WEIGHT
-          + torch.sqrt(self.err_s)
+          + self.opt.w_sup * torch.sqrt(self.err_s)
       )
 
       # Backprop
@@ -682,6 +828,8 @@ class TimeGAN(BaseModel):
 
       # Clip gradients
       torch.nn.utils.clip_grad_norm_(self.netg.parameters(), max_norm=1.0)
+
+
 
 
       #print("Loss G (total): ", self.err_g)
@@ -717,10 +865,12 @@ class TimeGAN(BaseModel):
       interpolates.requires_grad_(True)
 
       if self.conditional:
-          C_embed = self.cond_emb(self.C_time_mb, self.C_static_mb)
+          with torch.no_grad():
+              C_embed = self.cond_emb(self.C_time_mb, self.C_static_mb)
           d_interpolates = self.netd(interpolates, C_embed)
       else:
           d_interpolates = self.netd(interpolates)
+
 
 
       grad_outputs = torch.ones_like(d_interpolates)
@@ -767,7 +917,7 @@ class TimeGAN(BaseModel):
       self.err_d = loss_real + loss_fake + self.opt.w_gamma * loss_fake_e + self.opt.gp_lambda * gp
 
       # Backprop
-      self.err_d.backward(retain_graph=True)
+      self.err_d.backward()
 
       # 🔥 Strong gradient clipping to prevent critic explosion
       torch.nn.utils.clip_grad_norm_(self.netd.parameters(), max_norm=1.0)
@@ -827,35 +977,72 @@ class TimeGAN(BaseModel):
       self.backward_s()
       self.optimizer_s.step()
       # NEW
-      self.scheduler_s.step()
+    
       return float(self.err_s.item())   # devolvemos el valor numérico
 
     def optimize_params_g(self):
-      self.forward_e()
-      self.forward_s()
+      with torch.no_grad():
+       self.forward_e()
+
       self.forward_g()
       self.forward_sg()
       self.forward_rg()
-      self.forward_dg()
+      
+      # =========================
+      # G-step (B limpia):
+      # - D NO se entrena aquí (solo se usa para dar gradiente a G)
+      # - NO detach: grad debe fluir hacia G/cond_emb
+      # =========================
+      for p in self.netd.parameters():
+          p.requires_grad = False
+      self.netd.eval()
+
+      old_in = getattr(self.netd, "instance_noise", False)
+      self.netd.instance_noise = False
+
+      self.forward_dg(detach_for_d=False)
+
       self.optimizer_g.zero_grad()
-      self.optimizer_s.zero_grad()
       self.backward_g()
       self.optimizer_g.step()
-      self.optimizer_s.step()
+
+      self.netd.instance_noise = old_in
+
+      for p in self.netd.parameters():
+          p.requires_grad = True
+      self.netd.train()
+
+      with torch.no_grad():
+        # evita que el condicional "mate" a Z
+        self.netg.c_scale.clamp_(0.0, 0.2)
+        self.netg.z_scale.clamp_(0.5, 2.0)
       self.scheduler_g.step()
-      self.scheduler_s.step()
+
 
       return float(self.err_g.item())    #  devolvemos G-loss
 
     def optimize_params_d(self):
-      self.forward_e()
-      self.forward_g()
-      self.forward_sg()
-      self.forward_d()
-      self.forward_dg()
+      self.netd.train()
+
+      with torch.no_grad():
+          self.forward_e()
+          self.forward_g()
+          self.forward_sg()
+
+      self.forward_dg(detach_for_d=True)
+
+      if self.conditional:
+          with torch.no_grad():
+              C_embed_det = self.cond_emb(self.C_time_mb, self.C_static_mb)
+          self.Y_real = self.netd(self.H.detach(), C_embed_det)
+      else:
+          self.Y_real = self.netd(self.H.detach())
+
       self.optimizer_d.zero_grad()
       self.backward_d()
       self.optimizer_d.step()
-      # NEW
       self.scheduler_d.step()
+
       return float(self.err_d.item())
+
+

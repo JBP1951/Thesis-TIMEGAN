@@ -36,6 +36,17 @@ class Options():
             help='Type of dataset to use: sine (synthetic) or my_signals (real signals)'
         )
 
+        #New code added
+        self.parser.add_argument('--w_sup', type=float, default=1.0, help='Weight for supervised term in G loss')
+        
+        self.parser.add_argument(
+            '--save_ckpt_every',
+            type=int,
+            default=100,
+            help='Save full checkpoint every N iterations'
+)
+
+
                 # -----------------------------
         #  Conditional TimeGAN options
         # -----------------------------
@@ -88,7 +99,7 @@ class Options():
         # -----------------------------
         self.parser.add_argument(
             '--z_dim',
-            default=32,
+            default=64,
             type=int,
             help='Dimension of latent vector z'
         )
@@ -127,6 +138,11 @@ class Options():
             type=int
         )
 
+
+        self.parser.add_argument('--seed', type=int, default=1234, help='Fixed random seed')
+
+        
+
         # -----------------------------
         # Device configuration (same as original)
         # -----------------------------
@@ -160,6 +176,13 @@ class Options():
 
         self.parser.add_argument('--beta1', type=float, default=0.5, help='momentum term of adam')
         self.parser.add_argument('--lr', type=float, default=0.0002, help='initial learning rate for adam')
+        self.parser.add_argument(
+            '--lr_c',
+            type=float,
+            default=None,
+            help='Learning rate for cond_emb (if None, it will be set to 0.1 * lr_g)'
+        )
+
 
         # -----------------------------
         # Loss weights (kept from original)
@@ -188,6 +211,16 @@ class Options():
             if id >= 0:
                 self.opt.gpu_ids.append(id)
 
+        # If lr_c not provided, set it as a fraction of lr_g (or lr)
+        if self.opt.lr_c is None:
+            lr_g = getattr(self.opt, "lr_g", self.opt.lr)
+            self.opt.lr_c = 0.02 * lr_g
+
+        # Force fixed seed if provided
+        if hasattr(self.opt, "seed") and self.opt.seed is not None:
+            self.opt.manualseed = self.opt.seed
+
+
         # Set GPU device if applicable
         if self.opt.device == 'gpu' and len(self.opt.gpu_ids) > 0:
             torch.cuda.set_device(self.opt.gpu_ids[0])
@@ -202,16 +235,8 @@ class Options():
         if not os.path.isdir(expr_dir):
             os.makedirs(expr_dir)
 
-                # -----------------------------
-        # Derivar input_dim para el Encoder
-        # -----------------------------
-        if self.opt.conditional:
-            # X (acelerómetros) + C_time (RPM,T,current) + C_static (peso,dist)
-            self.opt.input_dim = self.opt.x_dim + self.opt.c_time_dim + self.opt.c_static_dim
-        else:
-            # Solo X
-            self.opt.input_dim = self.opt.x_dim
-
+        
+        self.opt.input_dim = None
 
         # Save options to disk
         file_name = os.path.join(expr_dir, 'opt.txt')

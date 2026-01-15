@@ -9,18 +9,32 @@ from sklearn.metrics import (
 from scipy.stats import entropy, pearsonr, ks_2samp
 
 
-def flatten_sequences(real_seqs, synth_seqs, max_samples=None):
+def flatten_sequences(real_seqs, synth_seqs,
+                      max_samples=None,
+                      max_points=50000):   # ← NUEVO
+
     n = min(len(real_seqs), len(synth_seqs))
     if max_samples is not None:
         n = min(n, max_samples)
 
-    # convert lists of (seq_len, features) → 2D (time, features)
-    real_flat = np.concatenate(real_seqs[:n], axis=0)
+    real_flat  = np.concatenate(real_seqs[:n], axis=0)
     synth_flat = np.concatenate(synth_seqs[:n], axis=0)
 
-    # match lengths
     min_len = min(len(real_flat), len(synth_flat))
-    return real_flat[:min_len], synth_flat[:min_len]
+    real_flat  = real_flat[:min_len]
+    synth_flat = synth_flat[:min_len]
+
+    # ---------------------------
+    # 🔑 SUBSAMPLE PARA KS
+    # ---------------------------
+    if len(real_flat) > max_points:
+        idx = np.random.choice(len(real_flat), max_points, replace=False)
+        real_flat  = real_flat[idx]
+        synth_flat = synth_flat[idx]
+
+    return real_flat, synth_flat
+
+
 
 
 def evaluate_timegan(real_seqs, synth_seqs, max_samples=2000, verbose=True):
@@ -97,7 +111,13 @@ def evaluate_timegan(real_seqs, synth_seqs, max_samples=2000, verbose=True):
         "KS_Mean": ks_mean
     }
 
+   
+
     if verbose:
+        print("\n⚠️ NOTE:")
+        print("Pointwise error metrics (MSE, MAE, R²) are reported for completeness only.")
+        print("They are NOT fully representative of generative fidelity in GAN-based time-series models.")
+        print("Distributional metrics (KS, KL, correlation) should be prioritized.\n")
         print("\n📊 [TimeGAN Evaluation Metrics]")
         print("-----------------------------------")
         for k, v in results.items():

@@ -38,6 +38,16 @@ def generate_from_condition(model, c_time, c_static):
     c_static_np = np.asarray(c_static, dtype=np.float32).reshape(1, 1, -1)
     C_static_t  = torch.tensor(c_static_np, dtype=torch.float32).to(device)
     C_static_exp = C_static_t.repeat(1, T, 1)
+
+
+    model.nete.eval()
+    model.netg.eval()
+    model.nets.eval()
+    model.netr.eval()
+    model.cond_emb.eval()
+    model.netd.eval()
+
+
     # -----------------------------
     # 3) Create condition embedding
     # -----------------------------
@@ -109,4 +119,6 @@ def fast_generate_batch(model, C_time_list, C_static_list, idx_list, batch_size=
         # Append
         for seq in X_hat.cpu().numpy():
             synthetic.append(seq.astype(np.float32))
+
+    return synthetic
 
