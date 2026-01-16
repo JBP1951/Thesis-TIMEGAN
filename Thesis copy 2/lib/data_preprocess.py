@@ -151,6 +151,9 @@ def sine_data_generation(no, seq_len, dim):
 # (5) Unified loader (similar to TimeGAN's load_data)
 # -------------------------------------------------------------
 
+use_accel_channels = [0]  # debug: solo Accel1
+# use_accel_channels = [0,1,2,3]  # final: 4 accels
+
 
 def load_data(data_type, seq_len, file_list,
               scaler_dyn, scaler_static,
@@ -211,6 +214,8 @@ def load_data(data_type, seq_len, file_list,
 
             # Comprobar misma longituds
             N = accel_data.shape[0]
+            if N <= seq_len:
+              continue
             if c_time_data.shape[0] != N:
                 raise ValueError(f"Longitudes distintas en señales dinámicas en experimento {i}")
 
@@ -218,9 +223,9 @@ def load_data(data_type, seq_len, file_list,
             full_dyn = np.concatenate([accel_data, c_time_data], axis=1)
             full_dyn_norm = scaler_dyn.transform(full_dyn)
 
-            accel_norm = full_dyn_norm[:, [0]]   # SOLO Accel1
+            accel_norm = full_dyn_norm[:, use_accel_channels]   # SOLO Accel1
 
-            c_time_norm = full_dyn_norm[:, 4:]
+            c_time_norm = full_dyn_norm[:,  len(accel_names):]
 
 
             
@@ -234,12 +239,21 @@ def load_data(data_type, seq_len, file_list,
             np.array([[weight, distance]], dtype=np.float32)
             )[0]
 
+            
 
-            # -------- 4) CREAR VENTANAS --------
-            count_exp = 0   # ← NUEVO: contador por experimento
+            # -------- 4) CREAR VENTANAS (sin sesgo al inicio) --------
+            all_starts = np.arange(0, N - seq_len, step)
 
-            for j in range(0, N - seq_len, step):
+            # muestreo aleatorio por experimento para cubrir todo el registro
+            if (max_sequences_per_experiment is not None) and (len(all_starts) > max_sequences_per_experiment):
+                starts = np.random.choice(all_starts, size=max_sequences_per_experiment, replace=False)
+            else:
+                starts = all_starts
 
+            # ✅ barajar siempre para evitar correlación temporal
+            starts = np.random.permutation(starts)
+
+            for j in starts:
                 x_win      = accel_norm[j:j+seq_len, :]
                 c_time_win = c_time_norm[j:j+seq_len, :]
 
@@ -247,22 +261,27 @@ def load_data(data_type, seq_len, file_list,
                 C_time_list.append(c_time_win.astype(np.float32))
                 C_static_list.append(c_static_vec)
 
-                count_exp += 1
+                # LÍMITE GLOBAL (opcional)
+                if (max_sequences is not None) and (len(X_list) >= max_sequences):
+                    break
 
-                # 🔹 LÍMITE POR EXPERIMENTO
-                if max_sequences_per_experiment is not None:
-                    if count_exp >= max_sequences_per_experiment:
-                        break
 
-                # 🔹 LÍMITE GLOBAL (opcional)
-                if max_sequences is not None:
-                    if len(X_list) >= max_sequences:
-                        break
-
-            if max_sequences is not None and len(X_list) >= max_sequences:
+            # Si ya alcanzaste el límite global, sal del loop de experimentos
+            if (max_sequences is not None) and (len(X_list) >= max_sequences):
                 break
 
+
     print(f"📌 Total sequences: {len(X_list)} | Each: {seq_len}×{X_list[0].shape[1]}")
+    idx = np.random.permutation(len(X_list))
+    X_list        = [X_list[i] for i in idx]
+    C_time_list   = [C_time_list[i] for i in idx]
+    C_static_list = [C_static_list[i] for i in idx]
+
+    print("📌 Sanity variability check:")
+    print("   X global std:", np.std(np.vstack([x.reshape(-1, x.shape[-1]) for x in X_list])))
+    print("   C_time global std:", np.std(np.vstack([c.reshape(-1, c.shape[-1]) for c in C_time_list])))
+    print("   Unique C_static:", np.unique(np.array(C_static_list), axis=0).shape[0])
+
 
     return X_list, C_time_list, C_static_list, feature_names
 

@@ -343,8 +343,8 @@ class Discriminator(nn.Module):
 
 
         # 🔥 FIX: disable CuDNN to allow double backward for WGAN-GP
-        with torch.backends.cudnn.flags(enabled=False):
-            out, _ = self.rnn(D_in)
+       
+        out, _ = self.rnn(D_in)
 
         
         out = self.dropout(out)

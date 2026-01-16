@@ -664,7 +664,15 @@ class TimeGAN(BaseModel):
 
     def forward_g(self):
 
-      self.Z = torch.tensor(self.Z, dtype=torch.float32).to(self.device)
+        # --- Z robusto: evita torch.tensor(tensor) y copias innecesarias ---
+      if isinstance(self.Z, np.ndarray):
+          self.Z = torch.from_numpy(self.Z).to(self.device).float()
+      elif torch.is_tensor(self.Z):
+          self.Z = self.Z.detach().to(self.device).float()
+      else:
+          # lista u otro tipo
+          self.Z = torch.as_tensor(self.Z, dtype=torch.float32, device=self.device)
+
 
       if self.conditional:
 
@@ -855,7 +863,6 @@ class TimeGAN(BaseModel):
 
     # GRADIENT PENALTY NEW
     def gradient_penalty(self, real, fake):
-
       batch_size, seq_len, hidden_dim = real.size()
 
       alpha = torch.rand(batch_size, 1, 1).to(self.device)
@@ -864,14 +871,19 @@ class TimeGAN(BaseModel):
       interpolates = alpha * real + (1 - alpha) * fake
       interpolates.requires_grad_(True)
 
+      # ---- construir C_embed (puede ser no_grad porque cond_emb está frozen en adversarial) ----
       if self.conditional:
           with torch.no_grad():
               C_embed = self.cond_emb(self.C_time_mb, self.C_static_mb)
-          d_interpolates = self.netd(interpolates, C_embed)
       else:
-          d_interpolates = self.netd(interpolates)
+          C_embed = None
 
-
+      # ---- CLAVE: desactivar CuDNN SOLO para este forward (double backward) ----
+      with torch.backends.cudnn.flags(enabled=False):
+          if self.conditional:
+              d_interpolates = self.netd(interpolates, C_embed)
+          else:
+              d_interpolates = self.netd(interpolates)
 
       grad_outputs = torch.ones_like(d_interpolates)
 
@@ -886,8 +898,8 @@ class TimeGAN(BaseModel):
 
       gradients = gradients.reshape(batch_size, -1)
       gp = ((gradients.norm(2, dim=1) - 1) ** 2).mean()
-
       return gp
+
 
 
 
@@ -993,33 +1005,55 @@ class TimeGAN(BaseModel):
       # - D NO se entrena aquí (solo se usa para dar gradiente a G)
       # - NO detach: grad debe fluir hacia G/cond_emb
       # =========================
+      # D se usa como función para gradiente a G => debe estar en train() para CuDNN backward
+      # =========================
+      # G-step:
+      # - D NO se actualiza, pero debe estar en train() para CuDNN backward
+      # - Desactivamos estocasticidad (dropout/instance_noise) solo en este paso
+      # =========================
       for p in self.netd.parameters():
           p.requires_grad = False
-      self.netd.eval()
+      self.netd.train()  # CuDNN backward requiere train()
 
       old_in = getattr(self.netd, "instance_noise", False)
       self.netd.instance_noise = False
 
+      old_p = getattr(self.netd.dropout, "p", None)
+      if old_p is not None:
+          self.netd.dropout.p = 0.0
+
+      # forward D(fake) con grad hacia G
       self.forward_dg(detach_for_d=False)
 
       self.optimizer_g.zero_grad()
+
+
+    # justo antes de backward_g()
+      self.netd.zero_grad(set_to_none=True)   # CLAVE: elimina grads viejos de D
+      self.optimizer_g.zero_grad(set_to_none=True)
+
+
       self.backward_g()
       self.optimizer_g.step()
 
+      # clamps
+      with torch.no_grad():
+          self.netg.c_scale.clamp_(0.0, 0.2)
+          self.netg.z_scale.clamp_(0.5, 2.0)
+
+      self.scheduler_g.step()
+
+      # ---- restaurar estado de D ----
+      if old_p is not None:
+          self.netd.dropout.p = old_p
       self.netd.instance_noise = old_in
 
       for p in self.netd.parameters():
           p.requires_grad = True
       self.netd.train()
 
-      with torch.no_grad():
-        # evita que el condicional "mate" a Z
-        self.netg.c_scale.clamp_(0.0, 0.2)
-        self.netg.z_scale.clamp_(0.5, 2.0)
-      self.scheduler_g.step()
+      return float(self.err_g.item())
 
-
-      return float(self.err_g.item())    #  devolvemos G-loss
 
     def optimize_params_d(self):
       self.netd.train()
