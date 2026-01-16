@@ -1038,7 +1038,7 @@ class TimeGAN(BaseModel):
 
       # clamps
       with torch.no_grad():
-          self.netg.c_scale.clamp_(0.0, 0.2)
+          self.netg.c_scale.clamp_(0.0, 0.5)
           self.netg.z_scale.clamp_(0.5, 2.0)
 
       self.scheduler_g.step()

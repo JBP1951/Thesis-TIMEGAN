@@ -207,7 +207,7 @@ class Generator(nn.Module):
     def __init__(self, opt):
         super(Generator, self).__init__()
         
-        self.c_scale = nn.Parameter(torch.tensor(0.02))  # empieza MUY bajo
+        self.c_scale = nn.Parameter(torch.tensor(0.15))  # empieza MUY bajo
         self.z_scale = nn.Parameter(torch.tensor(1.0))   # deja a Z dominar al inicio
 
 
